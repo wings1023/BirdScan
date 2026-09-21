@@ -4,3 +4,4 @@ __pycache__/
 
 bird_report/
 reports/
+.venv/
