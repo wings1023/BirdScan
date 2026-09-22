@@ -3,6 +3,8 @@
 
 This is post-processing only.  It never runs BioCLIP and never overwrites the
 input CSV unless the caller explicitly supplies the same path for --output.
+When present, the four species metadata columns are preserved as-is, including
+blank optional Chinese or English names.
 """
 
 from __future__ import annotations

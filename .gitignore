@@ -1,6 +1,17 @@
 .DS_Store
+Thumbs.db
+Desktop.ini
 __pycache__/
 *.pyc
+.pytest_cache/
+
+.env
+.env.*
+
+.vscode/
+.idea/
+*.swp
+*~
 
 bird_report/
 reports/

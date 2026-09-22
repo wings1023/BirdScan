@@ -23,6 +23,7 @@ from typing import Any, Iterable
 
 IMAGE_SUFFIXES = {".jpg", ".jpeg", ".png"}
 REQUIRED_COLUMNS = ("鸟种编号", "中文名", "拉丁学名", "英文名称")
+REQUIRED_VALUE_COLUMNS = ("鸟种编号", "拉丁学名")
 CSV_ENCODING = "utf-8-sig"
 XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 CACHE_FORMAT_VERSION = 1
@@ -137,7 +138,7 @@ def load_species(path: Path) -> dict[str, dict[str, str]]:
     mapping: dict[str, dict[str, str]] = {}
     for number, row in enumerate(rows, start=2):
         cleaned = {column: str(row.get(column, "")).strip() for column in REQUIRED_COLUMNS}
-        empty = [column for column, value in cleaned.items() if not value]
+        empty = [column for column in REQUIRED_VALUE_COLUMNS if not cleaned[column]]
         if empty:
             raise ValueError(f"Species file row {number} has blank values: {', '.join(empty)}")
         latin_name = cleaned["拉丁学名"]
