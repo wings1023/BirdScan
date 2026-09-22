@@ -234,8 +234,10 @@ def predict_resiliently(classifier: Any, paths: list[Path], top_k: int, batch_si
     """Predict batches, splitting a failed batch until the problematic image is isolated."""
     predictions: list[dict[str, Any]] = []
     failed: list[tuple[Path, str]] = []
+    split_notice_printed = False
 
     def predict_group(group: list[Path]) -> None:
+        nonlocal split_notice_printed
         if not group:
             return
         try:
@@ -245,6 +247,9 @@ def predict_resiliently(classifier: Any, paths: list[Path], top_k: int, batch_si
             if len(group) == 1:
                 failed.append((group[0], f"BioCLIP prediction failed: {exc}"))
                 return
+            if not split_notice_printed:
+                print(f"Batch of {len(group)} failed; automatically retrying with smaller batches.")
+                split_notice_printed = True
             midpoint = len(group) // 2
             predict_group(group[:midpoint])
             predict_group(group[midpoint:])
