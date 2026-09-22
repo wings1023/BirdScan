@@ -2,7 +2,9 @@
 
 **Language: English | [中文](README.md)**
 
-A batch species screening and review-assistance tool for birders that only reads source photos. BirdScan uses BioCLIP 2 to classify within the Latin names in a candidate species table and associates results with the species information in that table. It helps organize species candidates across a whole batch of photos for manual review; it is not an authoritative species identification tool, nor a photo-quality, focus-screening, or automatic photo-selection tool.
+A batch species screening tool for birders.
+BirdScan uses BioCLIP 2, a powerful biological AI vision model, to identify bird-species candidates across a whole batch of photos using a candidate species table you define. You can organize that table around location, season, and even habitat, helping narrow the candidate range substantially and making the results more useful in practice.
+It is designed to systematically screen hundreds or thousands of photos and organize results for further manual review; it only reads and never modifies the original photos.
 
 ## Why BirdScan exists
 
