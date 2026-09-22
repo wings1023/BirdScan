@@ -2,7 +2,33 @@
 
 **Language: English | [中文](README.md)**
 
-A batch bird-identification command-line tool that only reads source photos. It uses BioCLIP 2 to classify within the Latin names in a candidate species table and associates results with the species information in that table. BirdScan is an AI-assisted screening tool, not an authoritative species identification tool.
+A batch species screening and review-assistance tool for birders that only reads source photos. BirdScan uses BioCLIP 2 to classify within the Latin names in a candidate species table and associates results with the species information in that table. It helps organize species candidates across a whole batch of photos for manual review; it is not an authoritative species identification tool, nor a photo-quality, focus-screening, or automatic photo-selection tool.
+
+## Why BirdScan exists
+
+It began with a very specific bird-photography problem. After taking shorebird photography seriously for the first time, I came home with seven or eight hundred photos. Many frames held more than one bird; some subjects were tiny, distant, or blurred. I was not yet familiar with many of the sandpipers and plovers. Sending photos one at a time to an existing bird-ID app or general-purpose AI is convenient, but it is still slow with hundreds or thousands of images—and makes it hard to inspect the whole batch systematically afterwards.
+
+That is why these two small scripts exist. The point is not to compete over which model recognizes a single image most accurately. It is to let AI complete a first, batch-wide and systematic pass, then focus human attention on the candidates, photos, and odd results that deserve it most. BirdScan is a helper for batch screening, batch-level summarization, and manual review; it does not replace human identification.
+
+## Two-step workflow
+
+```text
+Photos
+  ↓
+scan_birds.py
+  ↓
+predictions.csv
+species_summary.csv
+  ↓
+summarize_report.py
+  ↓
+species_summary_reviewed.csv
+  ↓
+Manual review
+```
+
+- `scan_birds.py`: Uses BioCLIP 2 to run a batch Top-K first pass against your custom candidate species table. It writes per-photo results to `predictions.csv` and a batch summary to `species_summary.csv`.
+- `summarize_report.py`: The second step in the workflow. It further organizes and flags the existing scan results without running BioCLIP 2 again, helping reveal stable candidates, questionable candidates, and results worth returning to the original photos to review first.
 
 Requirement: Python 3.10 or newer. The project is currently verified with `pybioclip 2.1.6`; this is not the only supported version, and `requirements.txt` keeps the regular dependencies unpinned.
 
@@ -105,18 +131,35 @@ BirdScan uses BioCLIP 2 through the `bioclip` import provided by `pybioclip`, lo
 
 Runtime, memory use, and GPU memory use depend on the device, number of photos, image dimensions, batch size, and number of candidate species. The first model download and first candidate-text encoding are usually slower than later runs. The terminal and `run_summary.txt` report candidate-table loading, model loading, candidate-text encoding or cache loading, image inference, report writing, and total time.
 
-## Output
+## Scan output
 
 By default, `bird_report/` is created in the current directory:
 
 - `predictions.csv`: Top-K results for each successful photo, including the relative filename, rank, four species fields, and score.
-- `species_summary.csv`: Per-species Top-1/Top-K counts, maximum score, and corresponding best photo.
+- `species_summary.csv`: Per-species Top-1/Top-K counts (the `top1_count` and `topk_count` fields), maximum score, and corresponding best photo.
 - `uncertain.csv`: Photos whose Top-1 score is below the threshold.
 - `run_summary.txt`: Scan count, success count, failure count, number of distinct Top-1 species, timings, and speed; damaged files and isolated BioCLIP inference errors are also listed.
 
-The reports always output `鸟种编号`, `中文名`, `拉丁学名`, and `英文名称` as separate columns. Missing Chinese or English names remain blank; no other field is used as a fallback.
+The three CSV reports—`predictions.csv`, `species_summary.csv`, and `uncertain.csv`—always output `鸟种编号`, `中文名`, `拉丁学名`, and `英文名称` as separate columns. Missing Chinese or English names remain blank; no other field is used as a fallback. `run_summary.txt` is a plain-text runtime summary and is outside this field description.
 
 Scores are probabilities normalized across all Latin names in the candidate table, not a determination that a bird is certainly present in the photo. The first version does not detect or crop birds, so small, obscured, or bird-free photos should receive careful manual review in `uncertain.csv`.
+
+## Summary review: workflow step two
+
+Once `scan_birds.py` has written `species_summary.csv`, run `summarize_report.py` to organize the results from that batch. It does not run BioCLIP 2 again and does not modify its input file:
+
+```bash
+python summarize_report.py path/to/species_summary.csv
+```
+
+By default, it writes `species_summary_reviewed.csv` beside the input. It preserves all original fields and adds or organizes:
+
+- `topk_only_count`: The number of times a species appeared only in Top-K, rather than as Top-1.
+- `topk_top1_ratio`: The ratio between Top-K appearances and Top-1 appearances.
+- `confidence_level`: Whether the candidate shows a relatively stable presence signal within this batch.
+- `special_flag`: A marker for patterns that deserve priority manual inspection.
+
+These fields are not new model judgments, nor do they express real accuracy or probability. They support a batch-level review: finding repeatedly stable candidates; candidates that often enter Top-K but rarely reach Top-1; unusual or questionable results; and the species or photos most worth checking against the originals first.
 
 ## Usage boundaries and manual review
 
@@ -147,23 +190,6 @@ If BirdScan results or workflows contribute to research, reports, or public proj
 ```
 
 Use the latest information in the [official pybioclip repository's citation instructions](https://github.com/Imageomics/pybioclip#citation) and the [BioCLIP 2 project](https://github.com/Imageomics/bioclip-2). If you use another model, cite the corresponding paper for the model actually used.
-
-## Summary review post-processing
-
-`summarize_report.py` only reads an existing `species_summary.csv`; it does not run BioCLIP again or modify the input file:
-
-```bash
-.venv/bin/python summarize_report.py path/to/species_summary.csv
-```
-
-By default, it writes `species_summary_reviewed.csv` beside the input. It preserves all original fields and adds:
-
-- `top5_only_count`: `top5_count - top1_count`.
-- `top5_top1_ratio`: `top5_count / max(top1_count, 1)`.
-- `confidence_level`: `high`, `medium`, or `review`; expresses only whether the species has a relatively stable presence signal.
-- `special_flag`: `mixed_candidate`, `rare_candidate`, the combined value `mixed_candidate;rare_candidate`, or `none`; indicates whether a special pattern merits priority manual review.
-
-`confidence_level` and `special_flag` are manual-review aids only; they do not represent BioCLIP's true accuracy or probability. The two columns are independent: a species can have both `high` and `mixed_candidate`, or both `mixed_candidate;rare_candidate`.
 
 ## Troubleshooting
 

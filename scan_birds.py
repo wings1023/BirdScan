@@ -301,7 +301,7 @@ def write_reports(
 
     top1 = {file_name: file_rows[0] for file_name, file_rows in by_file.items() if file_rows}
     top1_counts = Counter(row["拉丁学名"] for row in top1.values())
-    top5_counts = Counter(row["拉丁学名"] for file_rows in by_file.values() for row in file_rows)
+    topk_counts = Counter(row["拉丁学名"] for file_rows in by_file.values() for row in file_rows)
     best: dict[str, tuple[float, str]] = {}
     for file_name, file_rows in by_file.items():
         for row in file_rows:
@@ -310,16 +310,16 @@ def write_reports(
             if name not in best or score > best[name][0]:
                 best[name] = (score, file_name)
     summary_rows = []
-    for latin_name in sorted(top5_counts):
+    for latin_name in sorted(topk_counts):
         score, image_name = best[latin_name]
         summary_rows.append({
             **species[latin_name],
             "top1_count": top1_counts[latin_name],
-            "top5_count": top5_counts[latin_name],
+            "topk_count": topk_counts[latin_name],
             "max_score": f"{score:.6f}",
             "best_image": image_name,
         })
-    summary_fields = [*REQUIRED_COLUMNS, "top1_count", "top5_count", "max_score", "best_image"]
+    summary_fields = [*REQUIRED_COLUMNS, "top1_count", "topk_count", "max_score", "best_image"]
     write_csv(output_dir / "species_summary.csv", summary_fields, summary_rows)
 
     uncertain_rows = [

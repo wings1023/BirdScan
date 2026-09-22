@@ -17,8 +17,8 @@ from pathlib import Path
 
 
 CSV_ENCODING = "utf-8-sig"
-REQUIRED_COLUMNS = ("top1_count", "top5_count", "max_score")
-ADDED_COLUMNS = ("top5_only_count", "top5_top1_ratio", "confidence_level", "special_flag")
+REQUIRED_COLUMNS = ("top1_count", "topk_count", "max_score")
+ADDED_COLUMNS = ("topk_only_count", "topk_top1_ratio", "confidence_level", "special_flag")
 
 
 def parse_args() -> argparse.Namespace:
@@ -73,11 +73,11 @@ def confidence_level(top1_count: int, max_score: float) -> str:
     return "review"
 
 
-def special_flag(top1_count: int, top5_count: int, max_score: float) -> str:
+def special_flag(top1_count: int, topk_count: int, max_score: float) -> str:
     """Return independent special-pattern flags, not a confidence estimate."""
-    ratio = top5_count / max(top1_count, 1)
+    ratio = topk_count / max(top1_count, 1)
     flags = []
-    if top5_count >= 20 and ratio >= 3:
+    if topk_count >= 20 and ratio >= 3:
         flags.append("mixed_candidate")
     if top1_count <= 2 and max_score >= 0.80:
         flags.append("rare_candidate")
@@ -102,17 +102,17 @@ def process(input_csv: Path, output_csv: Path) -> Counter[str]:
     reviewed_rows: list[dict[str, str]] = []
     for row_number, row in enumerate(rows, start=2):
         top1_count = parse_int(row["top1_count"], "top1_count", row_number)
-        top5_count = parse_int(row["top5_count"], "top5_count", row_number)
+        topk_count = parse_int(row["topk_count"], "topk_count", row_number)
         max_score = parse_score(row["max_score"], row_number)
-        if top5_count < top1_count:
-            raise ValueError(f"Row {row_number}: top5_count must be at least top1_count")
-        ratio = top5_count / max(top1_count, 1)
+        if topk_count < top1_count:
+            raise ValueError(f"Row {row_number}: topk_count must be at least top1_count")
+        ratio = topk_count / max(top1_count, 1)
         confidence = confidence_level(top1_count, max_score)
-        special = special_flag(top1_count, top5_count, max_score)
+        special = special_flag(top1_count, topk_count, max_score)
         reviewed_rows.append({
             **row,
-            "top5_only_count": str(top5_count - top1_count),
-            "top5_top1_ratio": f"{ratio:.6f}",
+            "topk_only_count": str(topk_count - top1_count),
+            "topk_top1_ratio": f"{ratio:.6f}",
             "confidence_level": confidence,
             "special_flag": special,
         })

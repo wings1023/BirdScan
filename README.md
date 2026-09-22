@@ -2,7 +2,33 @@
 
 **语言：[English](README_EN.md) | 中文**
 
-一个只读原始照片的批量鸟类识别命令行工具。它使用 BioCLIP 2 在候选物种表的拉丁学名范围内分类，并将结果关联回候选表中的物种信息。BirdScan 用于 AI 辅助初筛，不是权威鸟种鉴定工具。
+一个面向观鸟人的、只读原始照片的批量鸟种初筛与复核辅助工具。BirdScan 使用 BioCLIP 2 在候选物种表的拉丁学名范围内分类，并将结果关联回候选表中的物种信息；它帮助从整批照片中整理鸟种候选，辅助人工复核，不是权威鸟种鉴定工具，也不是照片质量筛选、对焦筛选或自动选片工具。
+
+## 为什么会有 BirdScan
+
+它来自一次很具体的拍鸟痛点：第一次认真拍鸻鹬后，带回了七八百张照片。许多照片里不只一只鸟；有的主体很小、很远，或已经拍糊了。对不少鸻鹬本身又不熟，逐张丢给现有识鸟软件或通用 AI 虽然方便，但面对几百上千张照片仍然很慢，也很难系统地回头检查整批结果。
+
+于是有了这两个小脚本。重点不是争夺“哪张单图认得最准”，而是先让 AI 把整批照片跑完，做一轮批量、系统性的筛查，再把人工精力集中到更值得看的候选、照片和异常结果上。BirdScan 是“批量初筛 + 批次汇总 + 人工复核”的辅助工具，不替代人工鉴定。
+
+## 两步工作流
+
+```text
+Photos
+  ↓
+scan_birds.py
+  ↓
+predictions.csv
+species_summary.csv
+  ↓
+summarize_report.py
+  ↓
+species_summary_reviewed.csv
+  ↓
+Manual review
+```
+
+- `scan_birds.py`：使用 BioCLIP 2，在你自定义的候选鸟种表中，为整批照片做 Top-K 初筛；它产出逐图结果 `predictions.csv` 和批次汇总 `species_summary.csv`。
+- `summarize_report.py`：工作流的第二步。它只基于已有的扫描结果进一步汇总、整理和标记，不会重新运行 BioCLIP 2；其目的在于从整批数据中找出稳定候选、可疑候选，以及更值得优先回原图复核的结果。
 
 要求：Python 3.10 或更高版本。目前已在 `pybioclip 2.1.6` 下验证；这不是唯一受支持版本，`requirements.txt` 保持未锁定的常规依赖范围。
 
@@ -105,18 +131,35 @@ BirdScan 使用 BioCLIP 2（通过 `pybioclip` 导入名 `bioclip`）加载 `hf-
 
 运行时间、内存和显存占用取决于设备、照片数量、图像尺寸、批量大小和候选物种数量。首次模型下载及首次候选文本编码通常会比后续运行更慢。终端和 `run_summary.txt` 会分别列出候选表读取、模型加载、候选文本编码或缓存加载、图片推理、报告写出和总耗时。
 
-## 输出
+## 扫描输出
 
 默认在当前目录生成 `bird_report/`：
 
 - `predictions.csv`：每张成功照片的 Top-K 结果，包含相对文件名、排名、物种四字段及分数。
-- `species_summary.csv`：按 Top-K 出现物种汇总 Top-1/Top-K 次数、最高分及对应最佳照片。
+- `species_summary.csv`：按 Top-K 出现物种汇总 Top-1/Top-K 次数（字段为 `top1_count`、`topk_count`）、最高分及对应最佳照片。
 - `uncertain.csv`：Top-1 分数低于阈值的照片。
 - `run_summary.txt`：扫描数、成功数、失败数、Top-1 不同物种数、耗时、速度；若有损坏文件或孤立的 BioCLIP 推理错误，也会列在这里。
 
-上述报告始终分别输出“鸟种编号”“中文名”“拉丁学名”“英文名称”四列；缺失的中文名或英文名称保持为空，不会用其他字段替代。
+`predictions.csv`、`species_summary.csv` 和 `uncertain.csv` 这三个 CSV 报告始终分别输出“鸟种编号”“中文名”“拉丁学名”“英文名称”四列；缺失的中文名或英文名称保持为空，不会用其他字段替代。`run_summary.txt` 是纯文本运行摘要，不属于上述字段说明范围。
 
 分数是在候选物种表的所有拉丁学名之间归一化的概率，不是“照片中一定有鸟”的判定。第一版不检测或裁切鸟，因此鸟很小、被遮挡或照片没有鸟时，应重点人工复核 `uncertain.csv`。
+
+## 汇总审阅：工作流第二步
+
+当 `scan_birds.py` 已经生成 `species_summary.csv` 后，运行 `summarize_report.py` 整理这一批扫描结果。它不会重新运行 BioCLIP 2，也不会修改输入文件：
+
+```bash
+python summarize_report.py path/to/species_summary.csv
+```
+
+默认会在同一目录写出 `species_summary_reviewed.csv`。它保留全部原字段，并新增或整理：
+
+- `topk_only_count`：只进入 Top-K、没有成为 Top-1 的次数。
+- `topk_top1_ratio`：Top-K 出现次数与 Top-1 出现次数的比值。
+- `confidence_level`：该候选在本批照片中是否呈现较稳定的存在信号。
+- `special_flag`：值得优先人工查看的特殊模式标记。
+
+这些字段不是新的模型判断，也不代表真实准确率或概率；它们服务于批次层面的审阅：发现反复稳定出现的候选、经常进入 Top-K 却很少成为 Top-1 的候选、较异常或值得怀疑的结果，并据此优先回到原图确认相应鸟种或照片。
 
 ## 使用边界与人工复核
 
@@ -147,23 +190,6 @@ BirdScan 是鸟类识别与初筛辅助工具，不应作为最终物种鉴定�
 ```
 
 请以 [pybioclip 官方仓库的 Citation 说明](https://github.com/Imageomics/pybioclip#citation) 和 [BioCLIP 2 项目](https://github.com/Imageomics/bioclip-2)中的最新信息为准；若改用其他模型，也应按实际使用的模型引用对应论文。
-
-## 汇总审阅后处理
-
-`summarize_report.py` 只读取已有的 `species_summary.csv`，不会重新运行 BioCLIP，也不会修改输入文件：
-
-```bash
-.venv/bin/python summarize_report.py path/to/species_summary.csv
-```
-
-默认会在同一目录写出 `species_summary_reviewed.csv`。它保留全部原字段，并新增：
-
-- `top5_only_count`：`top5_count - top1_count`。
-- `top5_top1_ratio`：`top5_count / max(top1_count, 1)`。
-- `confidence_level`：`high`、`medium` 或 `review`，只表达物种是否具有较稳定的存在信号。
-- `special_flag`：`mixed_candidate`、`rare_candidate`、组合值 `mixed_candidate;rare_candidate` 或 `none`，表达是否值得优先人工查看特殊模式。
-
-`confidence_level` 和 `special_flag` 都只是人工审阅辅助规则，不表示 BioCLIP 的真实准确率或概率。两列彼此独立：一个物种可以同时具有 `high` 和 `mixed_candidate`，也可以同时具有 `mixed_candidate;rare_candidate`。
 
 ## 故障处理
 

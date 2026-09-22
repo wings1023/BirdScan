@@ -59,7 +59,7 @@ class SummarizeReportTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             input_path = Path(directory) / "species_summary.csv"
             output_path = Path(directory) / "species_summary_reviewed.csv"
-            fields = ["鸟种编号", "中文名", "拉丁学名", "英文名称", "top1_count", "top5_count", "max_score"]
+            fields = ["鸟种编号", "中文名", "拉丁学名", "英文名称", "top1_count", "topk_count", "max_score"]
             with input_path.open("w", encoding="utf-8-sig", newline="") as handle:
                 writer = csv.DictWriter(handle, fieldnames=fields)
                 writer.writeheader()
@@ -69,7 +69,7 @@ class SummarizeReportTests(unittest.TestCase):
                     "拉丁学名": "Ardea alba",
                     "英文名称": "",
                     "top1_count": "1",
-                    "top5_count": "1",
+                    "topk_count": "1",
                     "max_score": "0.8",
                 })
 
