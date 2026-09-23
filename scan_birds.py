@@ -43,7 +43,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default="mps", help="BioCLIP device, e.g. mps or cpu (default: mps)")
     parser.add_argument("--model", choices=("bioclip2", "bioclip25"), default="bioclip2", help="Model to use (default: bioclip2)")
     parser.add_argument("--prompt-count", type=int, default=80, help="BioCLIP 2.5 templates per species (default: 80)")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Report directory (default: bird_report for bioclip2; bird_report_bioclip25 for bioclip25)")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Report directory (default: reports/bird_report/ for bioclip2; reports/bird_report_bioclip25/ for bioclip25)")
     args = parser.parse_args()
     from bioclip.predict import OPENA_AI_IMAGENET_TEMPLATE
 

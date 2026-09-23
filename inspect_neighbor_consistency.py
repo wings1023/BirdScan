@@ -54,7 +54,6 @@ def load_predictions(path: Path) -> dict[str, dict[str, str]]:
         required = {"file_name", "rank", "score"}
         if not reader.fieldnames or not required.issubset(reader.fieldnames):
             raise ValueError("predictions.csv must contain file_name, rank, and score columns")
-        species_column = "中文名" if "中文名" in reader.fieldnames else "拉丁学名"
         for row in reader:
             if (row.get("rank") or "").strip() != "1":
                 continue
@@ -68,9 +67,9 @@ def load_predictions(path: Path) -> dict[str, dict[str, str]]:
                 score = float(row["score"])
             except (TypeError, ValueError) as exc:
                 raise ValueError(f"Invalid rank-1 score for {name}: {row.get('score')!r}") from exc
-            species = (row.get(species_column) or "").strip()
+            species = (row.get("中文名") or "").strip() or (row.get("拉丁学名") or "").strip()
             if not species:
-                raise ValueError(f"Rank-1 prediction has blank {species_column}: {name}")
+                raise ValueError(f"Rank-1 prediction has blank 中文名 and 拉丁学名: {name}")
             result[key] = {
                 "file_name": name,
                 "species": species,

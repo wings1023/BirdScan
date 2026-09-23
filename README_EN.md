@@ -122,7 +122,7 @@ Optional parameters:
 --batch-size 16       Images per inference batch; default: 16
 --threshold 0.5       Top-1 scores below this value go to uncertain.csv
 --device mps          Default mps; cuda or cpu can also be specified
---output-dir bird_report  Report directory
+--output-dir <dir>      Report directory (default: reports/bird_report/; BioCLIP 2.5 default: reports/bird_report_bioclip25/)
 ```
 
 The photo directory must exist. The script recursively reads `.jpg`, `.jpeg`, and `.png` files. It does not modify, move, or rename source photos, and does not automatically detect or crop birds or call MegaDetector.
@@ -135,7 +135,7 @@ Runtime, memory use, and GPU memory use depend on the device, number of photos, 
 
 ## Scan output
 
-By default, `bird_report/` is created in the current directory:
+By default, BioCLIP 2 reports are written to `reports/bird_report/`; BioCLIP 2.5 uses `reports/bird_report_bioclip25/`:
 
 - `predictions.csv`: Top-K results for each successful photo, including the relative filename, rank, four species fields, and score.
 - `species_summary.csv`: Per-species Top-1/Top-K counts (the `top1_count` and `topk_count` fields), maximum score, and corresponding best photo.

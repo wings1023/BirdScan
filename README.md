@@ -122,7 +122,7 @@ python scan_birds.py "./photos" --species-file "./species.xlsx" --device mps
 --batch-size 16       每批推理照片数，默认 16
 --threshold 0.5       Top-1 分数低于此值时进入 uncertain.csv
 --device mps          默认 mps，也可指定 cuda 或 cpu
---output-dir bird_report  报告目录
+--output-dir <dir>      报告目录（默认：reports/bird_report/；BioCLIP 2.5 默认：reports/bird_report_bioclip25/）
 ```
 
 照片目录必须存在。脚本会递归读取其中的 `.jpg`、`.jpeg`、`.png`，不会修改、移动、重命名原照片，也不会自动裁鸟或调用 MegaDetector。
@@ -135,7 +135,7 @@ BirdScan 使用 BioCLIP 2（通过 `pybioclip` 导入名 `bioclip`）加载 `hf-
 
 ## 扫描输出
 
-默认在当前目录生成 `bird_report/`：
+默认在仓库的 `reports/bird_report/` 生成 BioCLIP 2 报告；BioCLIP 2.5 默认使用 `reports/bird_report_bioclip25/`：
 
 - `predictions.csv`：每张成功照片的 Top-K 结果，包含相对文件名、排名、物种四字段及分数。
 - `species_summary.csv`：按 Top-K 出现物种汇总 Top-1/Top-K 次数（字段为 `top1_count`、`topk_count`）、最高分及对应最佳照片。
