@@ -10,6 +10,12 @@ from pathlib import Path
 
 import torch
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPERIMENTS_DIR = Path(__file__).resolve().parent
+for _directory in (REPO_ROOT, EXPERIMENTS_DIR):
+    if str(_directory) not in sys.path:
+        sys.path.insert(0, str(_directory))
+
 from scan_birds import find_images
 
 
@@ -22,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parent / "reports" / "diagnostics" / "embedding_similarity.csv",
+        default=REPO_ROOT / "reports" / "diagnostics" / "embedding_similarity.csv",
         help="CSV output path (default: reports/diagnostics/embedding_similarity.csv)",
     )
     return parser.parse_args()

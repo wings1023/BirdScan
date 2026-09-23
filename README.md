@@ -1,202 +1,163 @@
 # BirdScan
 
-**语言：[English](README_EN.md) | 中文**
+**语言：中文 | [English](README_EN.md)**
 
-一个面向观鸟人的**批量鸟种初筛工具**。
-BirdScan 使用 BioCLIP 2（一个强大的生物 AI 视觉识别模型），在用户自定义的候选物种表中，对整批照片进行鸟种候选识别。候选表可以根据观察地点、季节，甚至生境自行整理，从而显著缩小候选范围、提高识别结果的实用性。
-它帮助从几百上千张照片中系统整理值得进一步人工复核的结果；只读取、不修改原始照片。
+BirdScan 是一个面向观鸟人的**批量鸟种初筛工具**，默认使用 BioCLIP 2.5 和 MegaDetector V6 crop 流程，对整批拍鸟照片进行候选鸟种识别和整理。候选物种表可以根据拍摄地点、季节和生境自行缩小，帮助从几百甚至上千张照片中，系统筛出值得进一步人工复核的鸟种、照片和异常结果。BirdScan 只读取、不修改原始照片，是“批量初筛 + 批次汇总 + 人工复核”的辅助工具，不替代人工鉴定。
 
 ## 为什么会有 BirdScan
 
-它来自一次很具体的拍鸟痛点：第一次认真拍鸻鹬后，带回了七八百张照片。许多照片里不只一只鸟；有的主体很小、很远，或已经拍糊了。对不少鸻鹬本身又不熟，逐张丢给现有识鸟软件或通用 AI 虽然方便，但面对几百上千张照片仍然很慢，也很难系统地回头检查整批结果。
+第一次认真拍鸻鹬后，我带回了七八百张照片。很多照片里不止一只鸟，有的主体很小、很远，或已经模糊；而我对不少鸻鹬并不熟悉。逐张使用现有识鸟软件或通用 AI 虽然方便，但面对几百上千张照片仍然很慢，也很难系统地回头检查整批结果。
 
-于是有了这两个小脚本。重点不是争夺“哪张单图认得最准”，而是先让 AI 把整批照片跑完，做一轮批量、系统性的筛查，再把人工精力集中到更值得看的候选、照片和异常结果上。BirdScan 是“批量初筛 + 批次汇总 + 人工复核”的辅助工具，不替代人工鉴定。
+BirdScan 想解决的是整批照片的筛查和整理：先让 AI 把照片跑完，完成系统性的第一轮筛查，再把人工精力集中到更值得看的候选、照片和异常结果上。重点不是争夺“哪张单图认得最准”，而是帮助观鸟人更有效地开展后续复核。
 
-## 两步工作流
+## 默认工作流
 
-```text
-Photos
-  ↓
-scan_birds.py
-  ↓
-predictions.csv
-species_summary.csv
-  ↓
-summarize_report.py
-  ↓
-species_summary_reviewed.csv
-  ↓
-Manual review
-```
+~~~text
+原图
+→ BioCLIP baseline 分类
+→ MegaDetector V6 检测动物并生成多个 crop
+→ 使用同一个 BioCLIP 模型对所有 crop 分类
+→ 选择 BioCLIP Top-1 score 最高的 crop（best_score）
+→ 检查该 crop 对应 bbox 的面积比例
+→ bbox area ratio <= 0.08：采用 crop 结果
+→ 否则：保留原图 baseline
+→ 无检测或该原图没有可分类的 crop：回退 baseline
+~~~
 
-- `scan_birds.py`：使用 BioCLIP 2，在你自定义的候选鸟种表中，为整批照片做 Top-K 初筛；它产出逐图结果 `predictions.csv` 和批次汇总 `species_summary.csv`。
-- `summarize_report.py`：工作流的第二步。它只基于已有的扫描结果进一步汇总、整理和标记，不会重新运行 BioCLIP 2；其目的在于从整批数据中找出稳定候选、可疑候选，以及更值得优先回原图复核的结果。
+Crop 默认开启。MegaDetector detection threshold 默认是 0.15，crop margin 默认是 0.20，size gate 默认是 0.08。使用 --no-crop 可只对原图运行 BioCLIP；--crop 可显式启用默认 crop 流程。阈值和 margin 当前不是普通 CLI 参数。
 
-要求：Python 3.10 或更高版本。目前已在 `pybioclip 2.1.6` 下验证；这不是唯一受支持版本，`requirements.txt` 保持未锁定的常规依赖范围。
+## 推荐硬件
 
-## 快速开始
+默认工作流使用 BioCLIP 2.5 和 MegaDetector crop，建议使用 GPU 加速设备。以下是稳妥的推荐配置，不是严格最低要求：
 
-先克隆仓库并进入目录：
+- **macOS：** Apple Silicon，推荐 24GB 或更多统一内存。
+- **Windows / Linux：** NVIDIA GPU，推荐 16GB 或更多独立显存。
 
-```bash
+低于上述配置仍可能运行。可以选择 BioCLIP 2.0、减小 batch size，或减少 BioCLIP 2.5 的 prompt count。CPU 设备受支持，主要用于兼容、调试或小规模测试，不建议用于大批量照片处理。
+
+设备参数由用户指定，程序不会自动选择设备：
+
+- Apple Silicon：--device mps
+- Windows / Linux NVIDIA：--device cuda
+- CPU：--device cpu
+
+## 安装
+
+需要 Python 3.10 或更高版本。
+
+### macOS / Linux
+
+~~~bash
 git clone https://github.com/wings1023/BirdScan.git
 cd BirdScan
-```
-
-仓库根目录附有 `species.xlsx` 候选表。准备一个照片目录后，按设备选择下列其中一条路径。
-
-### Windows + NVIDIA CUDA
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python --version
-```
-
-普通的 `pip install torch` 可能会安装 CPU 版 PyTorch。使用 NVIDIA GPU 时，请先按照 [PyTorch 官方安装页面](https://pytorch.org/get-started/locally/)针对当前系统、Python 版本和 CUDA 平台生成的命令安装 `torch` / `torchvision`，再安装 BirdScan 的其余运行依赖：
-
-```powershell
-python -m pip install pybioclip Pillow
-python scan_birds.py ".\photos" --species-file ".\species.xlsx" --device cuda
-```
-
-安装后可检查 CUDA 是否可用：
-
-```powershell
-python -c "import torch; print('CUDA available:', torch.cuda.is_available()); print('CUDA version:', torch.version.cuda); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'CPU')"
-```
-
-不要在 README 中固定某个 CUDA wheel 版本；请以 PyTorch 官方当前安装命令为准。Windows NVIDIA 用户不建议直接执行 `pip install -r requirements.txt` 来决定 PyTorch 的 CUDA 版本，因为裸 `torch` 依赖可能得到 CPU wheel。
-
-### macOS Apple Silicon + MPS
-
-```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -r requirements.txt
-python scan_birds.py "./photos" --species-file "./species.xlsx" --device mps
-```
+~~~
 
-### 通用 CPU
+Linux NVIDIA 用户请确认安装的是适用于本机 CUDA 平台的 PyTorch。必要时先按 [PyTorch 官方安装页面](https://pytorch.org/get-started/locally/)安装对应的 PyTorch，再安装 BirdScan 依赖。
 
-macOS 或 Linux：
+### Windows PowerShell
 
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
+~~~powershell
+git clone https://github.com/wings1023/BirdScan.git
+cd BirdScan
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+~~~
+
+使用 NVIDIA GPU 时，先通过 [PyTorch 官方安装页面](https://pytorch.org/get-started/locally/)选择适合本机的 CUDA 安装命令，再安装项目依赖：
+
+~~~powershell
 python -m pip install -r requirements.txt
-python scan_birds.py "./photos" --species-file "./species.xlsx" --device cpu
-```
+~~~
 
-Windows PowerShell：
+## 运行
 
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-python scan_birds.py ".\photos" --species-file ".\species.xlsx" --device cpu
-```
+主流程是：安装 BirdScan → 准备候选鸟种表（可先用仓库提供的 species.xlsx）→ 运行 scan_birds.py → 查看输出报告。一次扫描会直接生成主要结果；通常不需要再运行其他脚本。BioCLIP 2.5 和 crop 均为默认设置，无需额外指定：
 
-`--device` 的默认值是 `mps`，脚本不会自动回退到 CPU。没有可用 MPS 或 CUDA 设备时，必须显式传入 `--device cpu`。
+### macOS Apple Silicon
 
-## 候选物种表
+~~~bash
+python scan_birds.py "/path/to/photos" --species-file species.xlsx --device mps
+~~~
 
-候选表支持 UTF-8 CSV 或标准 `.xlsx`，不需要 `openpyxl`。候选表保持以下四列表格格式。四个字段都必须存在；其中“鸟种编号”和“拉丁学名”必须非空，“拉丁学名”必须唯一。“鸟种编号”只是用户自定义的辅助字段，不要求唯一，也不限制具体格式；“中文名”和“英文名称”可以留空：
+### Windows / Linux NVIDIA
 
-```text
+~~~bash
+python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
+~~~
+
+### 常用选项
+
+- --model bioclip25：默认模型，也是当前推荐模型。
+- --model bioclip2：BioCLIP 2.0，较低资源配置下可选。
+- --crop：显式启用默认 crop 流程。
+- --no-crop：关闭 crop，直接使用原图 baseline。
+- --prompt-count N：BioCLIP 2.5 每个候选物种使用的模板数，范围为 1–80，默认 80。
+- --batch-size N：每批分类的图片数，默认 16；资源较少时可调低。
+- --top-k N：每张照片保存的候选数，默认 Top-3；可指定其他大于等于 1 的数量。
+- --threshold N：Top-1 score 低于该值的照片写入 uncertain.csv，默认 0.5。
+- --output-dir DIR：报告目录。默认 BioCLIP 2.5 写入 reports/bird_report_bioclip25/；BioCLIP 2.0 写入 reports/bird_report/。
+
+参数名和其他选项可通过以下命令查看：
+
+~~~bash
+python scan_birds.py --help
+~~~
+
+## 候选鸟种表
+
+你可以使用自定义候选表；仓库中的 species.xlsx 是一个可直接参考的示例。候选表支持 UTF-8 CSV 和标准 XLSX，表格必须包含以下四列：
+
+~~~text
 鸟种编号,中文名,拉丁学名,英文名称
-```
+~~~
 
-拉丁学名是 BioCLIP 的候选分类标签。候选池不包含的物种不会被输出；应按拍摄地区、季节和栖息地缩小候选范围。候选池过宽、包含大量不可能物种时，会增加近缘种和错误候选的误判风险。
+鸟种编号和拉丁学名必须非空，拉丁学名必须唯一；鸟种编号不要求唯一，中文名和英文名称可以留空。BioCLIP 使用拉丁学名作为候选标签。候选池越贴近拍摄地区和季节，通常越适合初筛；不在候选表中的物种不会出现在结果中。
 
-## 运行与参数
+第一次运行可能需要从 Hugging Face 下载 BioCLIP 模型和 MegaDetector 权重，并为候选物种构建文本 embedding cache。候选 embedding 缓存在用户目录下的 .cache/birdscan/，相同模型、候选物种及 prompt 配置可复用缓存。
 
-```bash
-python scan_birds.py "./photos" --species-file "./species.xlsx" --device mps
-```
+## 输出文件
 
-可选参数：
+默认报告写入 reports/。该目录已加入 Git 忽略规则，属于本地运行输出。
 
-```text
---top-k 5             每张照片输出的候选数，默认 5
---batch-size 16       每批推理照片数，默认 16
---threshold 0.5       Top-1 分数低于此值时进入 uncertain.csv
---device mps          默认 mps，也可指定 cuda 或 cpu
---output-dir <dir>      报告目录（默认：reports/bird_report/；BioCLIP 2.5 默认：reports/bird_report_bioclip25/）
-```
+- **predictions.csv：** 每张成功照片的最终 Top-K 结果，含 file_name、rank、鸟种编号、中文名、拉丁学名、英文名称、score，以及以下 crop 诊断字段：
+  - final_source、crop_used
+  - selected_crop_file、detection_confidence、bbox_area_ratio
+  - baseline_top1_species、baseline_top1_score
+  - crop_top1_species、crop_top1_score
+- **species_summary.csv：** 按物种汇总 top1_count、topk_count、max_score 和 best_image。
+- **uncertain.csv：** Top-1 score 低于 threshold 的照片。
+- **run_summary.txt：** 扫描与失败数量、各阶段耗时和整体速度。
 
-照片目录必须存在。脚本会递归读取其中的 `.jpg`、`.jpeg`、`.png`，不会修改、移动、重命名原照片，也不会自动裁鸟或调用 MegaDetector。
+predictions.csv 的 file_name 始终指向原始照片。启用 crop 时，final_source 表示最终采用 baseline 还是 crop；crop_used 表示是否采用 crop。selected_crop_file、detection_confidence 和 bbox_area_ratio 记录最高分 crop 的检测信息。使用 --no-crop 时，final_source 为 baseline，crop 专属字段留空。
 
-## 首次运行、缓存与性能
+## 可选：离线审阅与后处理
 
-BirdScan 使用 BioCLIP 2（通过 `pybioclip` 导入名 `bioclip`）加载 `hf-hub:imageomics/bioclip-2`。首次运行需要联网从 Hugging Face 下载模型；模型下载后会由底层依赖复用本地缓存。候选拉丁学名的文本向量缓存单独保存在 `~/.cache/birdscan/`，候选表不变时会直接复用。
+如需对已有扫描结果进行进一步物种审阅或筛选，可以选择运行 summarize_report.py。它直接读取已有的 species_summary.csv，不会重新运行模型或重新扫描照片；适合对历史结果重新计算审阅字段：
 
-运行时间、内存和显存占用取决于设备、照片数量、图像尺寸、批量大小和候选物种数量。首次模型下载及首次候选文本编码通常会比后续运行更慢。终端和 `run_summary.txt` 会分别列出候选表读取、模型加载、候选文本编码或缓存加载、图片推理、报告写出和总耗时。
+~~~bash
+python summarize_report.py reports/bird_report_bioclip25/species_summary.csv
+~~~
 
-## 扫描输出
+这是可选后处理，不属于 scan_birds.py 主流程的必需步骤。脚本不会覆盖输入文件；默认在同一目录生成 species_summary_reviewed.csv，并增加 topk_only_count、topk_top1_ratio、confidence_level 和 special_flag，供人工审阅批次结果使用。
 
-默认在仓库的 `reports/bird_report/` 生成 BioCLIP 2 报告；BioCLIP 2.5 默认使用 `reports/bird_report_bioclip25/`：
+## 项目文件
 
-- `predictions.csv`：每张成功照片的 Top-K 结果，包含相对文件名、排名、物种四字段及分数。
-- `species_summary.csv`：按 Top-K 出现物种汇总 Top-1/Top-K 次数（字段为 `top1_count`、`topk_count`）、最高分及对应最佳照片。
-- `uncertain.csv`：Top-1 分数低于阈值的照片。
-- `run_summary.txt`：扫描数、成功数、失败数、Top-1 不同物种数、耗时、速度；若有损坏文件或孤立的 BioCLIP 推理错误，也会列在这里。
+- scan_birds.py：主入口，扫描照片、运行原图与 crop 分类并写出报告。
+- megadetector_utils.py：MegaDetector V6 加载及 detection / crop 支持。
+- summarize_report.py：读取物种汇总并生成审阅版报告。
+- test_scan_birds.py：自动化测试。
 
-`predictions.csv`、`species_summary.csv` 和 `uncertain.csv` 这三个 CSV 报告始终分别输出“鸟种编号”“中文名”“拉丁学名”“英文名称”四列；缺失的中文名或英文名称保持为空，不会用其他字段替代。`run_summary.txt` 是纯文本运行摘要，不属于上述字段说明范围。
+~~~text
+experiments/  研究、诊断和评测工具，包括 crop、fusion、size gate 等脚本
+benchmarks/   人工标注 ground truth，用于实验策略的回归验证
+reports/      本地运行输出，Git ignored
+~~~
 
-分数是在候选物种表的所有拉丁学名之间归一化的概率，不是“照片中一定有鸟”的判定。第一版不检测或裁切鸟，因此鸟很小、被遮挡或照片没有鸟时，应重点人工复核 `uncertain.csv`。
+## 人工复核与问题反馈
 
-## 汇总审阅：工作流第二步
+模型输出用于批量初筛，不是最终鉴定。近缘种、远距离或模糊照片、遮挡个体、稀有种和一张照片中出现多个物种的情况尤其需要查看原图。模型 score 表示候选表内的排序结果，不是鸟种确定存在的证明。
 
-当 `scan_birds.py` 已经生成 `species_summary.csv` 后，运行 `summarize_report.py` 整理这一批扫描结果。它不会重新运行 BioCLIP 2，也不会修改输入文件：
-
-```bash
-python summarize_report.py path/to/species_summary.csv
-```
-
-默认会在同一目录写出 `species_summary_reviewed.csv`。它保留全部原字段，并新增或整理：
-
-- `topk_only_count`：只进入 Top-K、没有成为 Top-1 的次数。
-- `topk_top1_ratio`：Top-K 出现次数与 Top-1 出现次数的比值。
-- `confidence_level`：该候选在本批照片中是否呈现较稳定的存在信号。
-- `special_flag`：值得优先人工查看的特殊模式标记。
-
-这些字段不是新的模型判断，也不代表真实准确率或概率；它们服务于批次层面的审阅：发现反复稳定出现的候选、经常进入 Top-K 却很少成为 Top-1 的候选、较异常或值得怀疑的结果，并据此优先回到原图确认相应鸟种或照片。
-
-## 使用边界与人工复核
-
-BirdScan 是鸟类识别与初筛辅助工具，不应作为最终物种鉴定依据。请结合原始照片、地点、时间、行为和可靠的鸟类资料进行判断，必要时咨询有经验的观察者或专家。
-
-以下情况尤其需要人工复核：
-
-- 近缘种；
-- 远距离或模糊照片；
-- 遮挡或非完整个体；
-- 稀有种；
-- 一张照片里有多个物种。
-
-模型分数只表示候选物种在当前候选表中的相对排序，不能替代现场证据或正式鉴定。候选表越贴合地点、季节和栖息地，结果越适合人工复核；它不应被视为对未列入候选池物种的否定判断。
-
-## Citation
-
-如果 BirdScan 的结果或工作流对研究、报告或公开项目有帮助，请同时引用 `pybioclip` 软件包和其默认使用的 BioCLIP 2 模型。`pybioclip` 的版本化软件引用请以其仓库中的 `CITATION.cff` 或 Zenodo DOI 为准；BioCLIP 2 可引用：
-
-```bibtex
-@inproceedings{gu2025bioclip,
-  title={BioCLIP 2: Emergent Properties from Scaling Hierarchical Contrastive Learning},
-  author={Jianyang Gu and Samuel Stevens and Elizabeth G. Campolongo and Matthew J. Thompson and Net Zhang and Jiaman Wu and Andrei Kopanev and Zheda Mai and Alexander E. White and James Balhoff and Wasila Dahdul and Daniel Rubenstein and Hilmar Lapp and Tanya Berger-Wolf and Wei-Lun Chao and Yu Su},
-  booktitle={The Thirty-ninth Annual Conference on Neural Information Processing Systems},
-  year={2025},
-  url={https://openreview.net/forum?id=yPC9zmkQgG}
-}
-```
-
-请以 [pybioclip 官方仓库的 Citation 说明](https://github.com/Imageomics/pybioclip#citation) 和 [BioCLIP 2 项目](https://github.com/Imageomics/bioclip-2)中的最新信息为准；若改用其他模型，也应按实际使用的模型引用对应论文。
-
-## 故障处理
-
-- 空文件夹会报错，不会启动模型。
-- 损坏图片会记录为失败，其他图片继续处理。
-- 非图片文件会被忽略。
-- 如果一个推理 batch 出错，脚本会拆分 batch 继续处理，直到只把失败图片记录下来。
-- `.xls` 旧格式请先在 Excel 中另存为 `.xlsx`，或导出为 UTF-8 CSV。
+如遇到问题或有功能建议，欢迎通过 [GitHub Issues](https://github.com/wings1023/BirdScan/issues) 反馈。

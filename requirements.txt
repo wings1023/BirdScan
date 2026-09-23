@@ -1,3 +1,4 @@
 pybioclip
 torch
 Pillow
+PytorchWildlife

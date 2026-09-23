@@ -12,6 +12,12 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+EXPERIMENTS_DIR = Path(__file__).resolve().parent
+for _directory in (REPO_ROOT, EXPERIMENTS_DIR):
+    if str(_directory) not in sys.path:
+        sys.path.insert(0, str(_directory))
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -24,7 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path(__file__).resolve().parent / "reports" / "diagnostics" / "neighbor_consistency.csv",
+        default=REPO_ROOT / "reports" / "diagnostics" / "neighbor_consistency.csv",
     )
     args = parser.parse_args()
     if args.k < 1:

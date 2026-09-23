@@ -29,6 +29,17 @@ XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 CACHE_FORMAT_VERSION = 1
 CACHE_DIR = Path.home() / ".cache" / "birdscan"
 BIOCLIP25_MODEL_STR = "hf-hub:imageomics/bioclip-2.5-vith14"
+DEFAULT_SIZE_GATE = 0.08
+DEFAULT_DETECTION_THRESHOLD = 0.15
+DEFAULT_CROP_MARGIN = 0.20
+
+
+def select_crop_result(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, bool]:
+    """Select highest crop Top-1 score, then apply the bbox area gate."""
+    if not candidates:
+        return None, False
+    best = max(candidates, key=lambda item: float(item["prediction"]["score"]))
+    return best, float(best["record"]["area"]) <= DEFAULT_SIZE_GATE
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,13 +48,17 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("photo_dir", type=Path, help="Folder to scan recursively for JPG/JPEG/PNG files")
     parser.add_argument("--species-file", required=True, type=Path, help="Candidate species CSV or .xlsx file")
-    parser.add_argument("--top-k", type=int, default=5, help="Predictions saved per image (default: 5)")
+    parser.add_argument("--top-k", type=int, default=3, help="Predictions saved per image (default: 3)")
     parser.add_argument("--batch-size", type=int, default=16, help="Images per BioCLIP inference batch (default: 16)")
     parser.add_argument("--threshold", type=float, default=0.5, help="Top-1 uncertainty threshold (default: 0.5)")
     parser.add_argument("--device", default="mps", help="BioCLIP device, e.g. mps or cpu (default: mps)")
-    parser.add_argument("--model", choices=("bioclip2", "bioclip25"), default="bioclip2", help="Model to use (default: bioclip2)")
+    parser.add_argument("--model", choices=("bioclip2", "bioclip25"), default="bioclip25", help="Model to use (default: bioclip25)")
+    crop_group = parser.add_mutually_exclusive_group()
+    crop_group.add_argument("--crop", dest="crop", action="store_true", help="Enable MegaDetector crop classification (default)")
+    crop_group.add_argument("--no-crop", dest="crop", action="store_false", help="Use original-image BioCLIP only")
+    parser.set_defaults(crop=True)
     parser.add_argument("--prompt-count", type=int, default=80, help="BioCLIP 2.5 templates per species (default: 80)")
-    parser.add_argument("--output-dir", type=Path, default=None, help="Report directory (default: reports/bird_report/ for bioclip2; reports/bird_report_bioclip25/ for bioclip25)")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Report directory (defaults under reports/ based on model)")
     args = parser.parse_args()
     from bioclip.predict import OPENA_AI_IMAGENET_TEMPLATE
 
@@ -408,10 +423,11 @@ def write_reports(
     threshold: float,
     elapsed_seconds: float,
     stage_timings: dict[str, float],
+    diagnostics: dict[str, dict[str, Any]] | None = None,
 ) -> float:
     report_started = time.perf_counter()
     output_dir.mkdir(parents=True, exist_ok=True)
-    prediction_fields = ["file_name", "rank", *REQUIRED_COLUMNS, "score"]
+    prediction_fields = ["file_name", "rank", *REQUIRED_COLUMNS, "score", "final_source", "crop_used", "selected_crop_file", "detection_confidence", "bbox_area_ratio", "baseline_top1_species", "baseline_top1_score", "crop_top1_species", "crop_top1_score"]
     rows: list[dict[str, Any]] = []
     by_file: dict[str, list[dict[str, Any]]] = {}
     for item in predictions:
@@ -421,7 +437,7 @@ def write_reports(
         except ValueError:
             file_name = str(image_path)
         latin_name = item["classification"]
-        row = {"file_name": file_name, **species[latin_name], "score": f"{float(item['score']):.6f}"}
+        row = {"file_name": file_name, **species[latin_name], "score": f"{float(item['score']):.6f}", **(diagnostics or {}).get(file_name, {})}
         by_file.setdefault(file_name, []).append(row)
 
     for file_name, file_rows in sorted(by_file.items()):
@@ -526,8 +542,101 @@ def main() -> int:
         predictions, prediction_failures = predict_resiliently(classifier, valid_paths, effective_top_k, args.batch_size)
         stage_timings["image_inference"] = time.perf_counter() - inference_started
         failures.extend(prediction_failures)
+
+        diagnostics: dict[str, dict[str, Any]] = {}
+        if args.crop:
+            from PIL import Image
+            import megadetector_utils as md
+
+            crop_root = args.output_dir / "diagnostics" / "crop_runtime"
+            crop_root.mkdir(parents=True, exist_ok=True)
+            baseline_by_file: dict[str, list[dict[str, Any]]] = {}
+            for item in predictions:
+                baseline_by_file.setdefault(Path(item["file_name"]).resolve().as_posix(), []).append(item)
+            try:
+                detector = md.load_detector(args.device)
+            except Exception as exc:
+                raise RuntimeError(f"MegaDetector V6 初始化失败（crop 默认开启）：{exc}") from exc
+
+            crops: list[dict[str, Any]] = []
+            per_source: dict[str, list[dict[str, Any]]] = {}
+            for source in valid_paths:
+                key = source.resolve().as_posix()
+                per_source[key] = []
+                try:
+                    found = [d for d in md.extract_animals(detector.single_image_detection(str(source), det_conf_thres=DEFAULT_DETECTION_THRESHOLD)) if d[0] >= DEFAULT_DETECTION_THRESHOLD]
+                    with Image.open(source) as opened:
+                        image = opened.convert("RGB")
+                    width, height = image.size
+                    for index, (confidence, box) in enumerate(found, start=1):
+                        x1, y1, x2, y2 = box
+                        x1, y1 = max(0.0, min(width, x1)), max(0.0, min(height, y1))
+                        x2, y2 = max(x1, min(width, x2)), max(y1, min(height, y2))
+                        area_ratio = (x2 - x1) * (y2 - y1) / (width * height)
+                        bounds = md.padded_box((x1, y1, x2, y2), DEFAULT_CROP_MARGIN, width, height)
+                        if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
+                            continue
+                        crop_path = crop_root / f"{hashlib.sha1(key.encode()).hexdigest()[:12]}__det{index:02d}{source.suffix.lower()}"
+                        image.crop(bounds).save(crop_path)
+                        record = {"path": crop_path, "source": key, "confidence": confidence, "area": area_ratio,
+                                  "crop_file": crop_path.relative_to(args.output_dir).as_posix()}
+                        per_source[key].append(record)
+                        crops.append(record)
+                except Exception as exc:
+                    print(f"Crop detection failed; using baseline: {source}: {exc}", file=sys.stderr)
+
+            crop_predictions: list[dict[str, Any]] = []
+            crop_failures: list[tuple[Path, str]] = []
+            if crops:
+                crop_predictions, crop_failures = predict_resiliently(classifier, [c["path"] for c in crops], effective_top_k, args.batch_size)
+            crop_rows_by_path: dict[str, list[dict[str, Any]]] = {}
+            for item in crop_predictions:
+                crop_rows_by_path.setdefault(Path(item["file_name"]).resolve().as_posix(), []).append(item)
+            for source in valid_paths:
+                key = source.resolve().as_posix()
+                base_rows = baseline_by_file.get(key, [])
+                baseline_top = base_rows[0] if base_rows else None
+                candidates = []
+                for record in per_source.get(key, []):
+                    ranked_rows = crop_rows_by_path.get(record["path"].resolve().as_posix(), [])
+                    if ranked_rows:
+                        top1 = max(ranked_rows, key=lambda item: float(item["score"]))
+                        candidates.append({"record": record, "prediction": top1})
+                best, use_crop = select_crop_result(candidates)
+                if use_crop:
+                    selected_path = best["record"]["path"].resolve().as_posix()
+                    chosen = [dict(p, file_name=str(source)) for p in crop_predictions if Path(p["file_name"]).resolve().as_posix() == selected_path]
+                    chosen.sort(key=lambda p: -float(p["score"]))
+                    predictions = [p for p in predictions if Path(p["file_name"]).resolve().as_posix() != key] + chosen
+                record = best["record"] if best else None
+                diagnostics[source.relative_to(args.photo_dir).as_posix()] = {
+                    "final_source": "crop" if use_crop else "baseline", "crop_used": "true" if use_crop else "false",
+                    "selected_crop_file": record["crop_file"] if record else "",
+                    "detection_confidence": f"{record['confidence']:.6f}" if record else "",
+                    "bbox_area_ratio": f"{record['area']:.8f}" if record else "",
+                    "baseline_top1_species": baseline_top.get("classification", "") if baseline_top else "",
+                    "baseline_top1_score": f"{float(baseline_top['score']):.6f}" if baseline_top else "",
+                    "crop_top1_species": best["prediction"].get("classification", "") if best else "",
+                    "crop_top1_score": f"{float(best['prediction']['score']):.6f}" if best else "",
+                }
+            if crop_failures:
+                print(f"Crop classification failures: {len(crop_failures)}; affected images use baseline where no valid crop remains.", file=sys.stderr)
+        else:
+            diagnostics = {}
+            baseline_rows: dict[str, dict[str, Any]] = {}
+            for item in predictions:
+                key = Path(item["file_name"]).resolve().as_posix()
+                if key not in baseline_rows or float(item["score"]) > float(baseline_rows[key]["score"]):
+                    baseline_rows[key] = item
+            for source in valid_paths:
+                baseline_top = baseline_rows.get(source.resolve().as_posix())
+                diagnostics[source.relative_to(args.photo_dir).as_posix()] = {
+                    "final_source": "baseline", "crop_used": "false",
+                    "baseline_top1_species": baseline_top.get("classification", "") if baseline_top else "",
+                    "baseline_top1_score": f"{float(baseline_top['score']):.6f}" if baseline_top else "",
+                }
         print("Writing reports...")
-        write_reports(args.output_dir, args.photo_dir, predictions, species, failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings)
+        write_reports(args.output_dir, args.photo_dir, predictions, species, failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings, diagnostics)
         total_seconds = time.perf_counter() - started
         print(f"Reports written to: {args.output_dir.resolve()}")
         print(f"Timings — model load: {stage_timings['model_load']:.3f}s; candidate text: {stage_timings['candidate_text']:.3f}s; image inference: {stage_timings['image_inference']:.3f}s; report writing: {stage_timings['report_writing']:.3f}s; total: {total_seconds:.3f}s.")

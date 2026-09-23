@@ -16,3 +16,16 @@ __pycache__/
 bird_report/
 reports/
 .venv/
+
+# Runtime diagnostics and locally cached model artifacts
+diagnostics/
+crop_runtime/
+.cache/
+checkpoints/
+model_cache/
+
+# Local sample manifests tied to private photo folders
+/sample_manifest*.csv
+
+# Temporary files created while writing caches or reports
+*.tmp
