@@ -21,7 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("embedding_csv", type=Path, help="inspect_embeddings.py embedding similarity matrix CSV")
     parser.add_argument("--k", type=int, default=5, help="Neighbors per strategy (default: 5)")
     parser.add_argument("--window", type=int, default=10, help="Hybrid sequence radius (default: 10)")
-    parser.add_argument("--output", type=Path, default=Path("neighbor_consistency.csv"))
+    parser.add_argument(
+        "--output",
+        type=Path,
+        default=Path(__file__).resolve().parent / "reports" / "diagnostics" / "neighbor_consistency.csv",
+    )
     args = parser.parse_args()
     if args.k < 1:
         parser.error("--k must be at least 1")

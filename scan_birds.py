@@ -52,7 +52,8 @@ def parse_args() -> argparse.Namespace:
     if args.prompt_count > len(OPENA_AI_IMAGENET_TEMPLATE):
         parser.error(f"--prompt-count cannot exceed the {len(OPENA_AI_IMAGENET_TEMPLATE)} available templates")
     if args.output_dir is None:
-        args.output_dir = Path("bird_report_bioclip25" if args.model == "bioclip25" else "bird_report")
+        report_name = "bird_report_bioclip25" if args.model == "bioclip25" else "bird_report"
+        args.output_dir = Path(__file__).resolve().parent / "reports" / report_name
     if args.top_k < 1:
         parser.error("--top-k must be at least 1")
     if args.batch_size < 1:

@@ -22,8 +22,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("embedding_similarity.csv"),
-        help="CSV output path (default: ./embedding_similarity.csv)",
+        default=Path(__file__).resolve().parent / "reports" / "diagnostics" / "embedding_similarity.csv",
+        help="CSV output path (default: reports/diagnostics/embedding_similarity.csv)",
     )
     return parser.parse_args()
 
