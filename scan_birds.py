@@ -28,6 +28,7 @@ CSV_ENCODING = "utf-8-sig"
 XLSX_NS = "{http://schemas.openxmlformats.org/spreadsheetml/2006/main}"
 CACHE_FORMAT_VERSION = 1
 CACHE_DIR = Path.home() / ".cache" / "birdscan"
+BIOCLIP25_MODEL_STR = "hf-hub:imageomics/bioclip-2.5-vith14"
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,8 +41,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-size", type=int, default=16, help="Images per BioCLIP inference batch (default: 16)")
     parser.add_argument("--threshold", type=float, default=0.5, help="Top-1 uncertainty threshold (default: 0.5)")
     parser.add_argument("--device", default="mps", help="BioCLIP device, e.g. mps or cpu (default: mps)")
-    parser.add_argument("--output-dir", type=Path, default=Path("bird_report"), help="Report directory (default: bird_report)")
+    parser.add_argument("--model", choices=("bioclip2", "bioclip25"), default="bioclip2", help="Model to use (default: bioclip2)")
+    parser.add_argument("--prompt-count", type=int, default=80, help="BioCLIP 2.5 templates per species (default: 80)")
+    parser.add_argument("--output-dir", type=Path, default=None, help="Report directory (default: bird_report for bioclip2; bird_report_bioclip25 for bioclip25)")
     args = parser.parse_args()
+    from bioclip.predict import OPENA_AI_IMAGENET_TEMPLATE
+
+    if args.prompt_count < 1:
+        parser.error("--prompt-count must be at least 1")
+    if args.prompt_count > len(OPENA_AI_IMAGENET_TEMPLATE):
+        parser.error(f"--prompt-count cannot exceed the {len(OPENA_AI_IMAGENET_TEMPLATE)} available templates")
+    if args.output_dir is None:
+        args.output_dir = Path("bird_report_bioclip25" if args.model == "bioclip25" else "bird_report")
     if args.top_k < 1:
         parser.error("--top-k must be at least 1")
     if args.batch_size < 1:
@@ -170,7 +181,12 @@ def validate_images(paths: Iterable[Path]) -> tuple[list[Path], list[tuple[Path,
     return valid, failed
 
 
-def candidate_cache_path(model: str, pretrained: str | None, labels: list[str]) -> tuple[Path, dict[str, Any]]:
+def candidate_cache_path(
+    model: str,
+    pretrained: str | None,
+    labels: list[str],
+    prompt_count: int | None = None,
+) -> tuple[Path, dict[str, Any]]:
     """Build a cache key from the complete model configuration and label order."""
     metadata = {
         "format_version": CACHE_FORMAT_VERSION,
@@ -181,6 +197,8 @@ def candidate_cache_path(model: str, pretrained: str | None, labels: list[str]) 
         ).hexdigest(),
         "label_count": len(labels),
     }
+    if prompt_count is not None:
+        metadata["prompt_count"] = prompt_count
     key = hashlib.sha256(json.dumps(metadata, sort_keys=True).encode("utf-8")).hexdigest()
     return CACHE_DIR / f"candidate-embeddings-{key}.pt", metadata
 
@@ -227,6 +245,117 @@ def build_classifier(labels: list[str], device: str) -> tuple[Any, float, bool, 
             self.candidate_seconds = time.perf_counter() - started
 
     classifier = _CachedCustomLabelsClassifier(labels, model_str=BIOCLIP_MODEL_STR, device=device)
+    return classifier, classifier.candidate_seconds, classifier.cache_hit, classifier.cache_path
+
+
+def encode_bioclip25_candidate_embeddings(
+    classifier: Any,
+    labels: list[str],
+    prompt_count: int = 80,
+    batch_size: int = 32,
+) -> Any:
+    """Build the same per-label template mean as pybioclip, with bounded text batches."""
+    import torch
+    import torch.nn.functional as F
+    from bioclip.predict import OPENA_AI_IMAGENET_TEMPLATE
+
+    if not 1 <= prompt_count <= len(OPENA_AI_IMAGENET_TEMPLATE):
+        raise ValueError(f"prompt_count must be between 1 and {len(OPENA_AI_IMAGENET_TEMPLATE)}")
+    templates = OPENA_AI_IMAGENET_TEMPLATE[:prompt_count]
+    all_label_features = []
+    total = len(labels)
+    print("Building BioCLIP 2.5 candidate text embeddings")
+    print(f"species={total}")
+    print(f"prompts_per_species={prompt_count}")
+    print(f"total_texts={total * prompt_count}")
+    with torch.no_grad():
+        for start in range(0, total, batch_size):
+            label_batch = labels[start : start + batch_size]
+            prompts = [template(label) for label in label_batch for template in templates]
+            prompt_features = []
+            for prompt_start in range(0, len(prompts), batch_size):
+                prompt_batch = prompts[prompt_start : prompt_start + batch_size]
+                tokens = classifier.tokenizer(prompt_batch).to(classifier.device)
+                features = classifier.model.encode_text(tokens)
+                prompt_features.append(F.normalize(features, dim=-1))
+
+            normalized_features = torch.cat(prompt_features).reshape(
+                len(label_batch), len(templates), -1
+            )
+            label_features = normalized_features.mean(dim=1)
+            label_features = F.normalize(label_features, dim=-1)
+            all_label_features.append(label_features)
+            completed = min(start + len(label_batch), total)
+            print(f"BioCLIP 2.5 candidate text encoding: {completed}/{total}")
+
+    return torch.cat(all_label_features, dim=0).T
+
+
+def build_bioclip25_classifier(
+    labels: list[str], device: str, prompt_count: int = 80
+) -> tuple[Any, float, bool, Path]:
+    """Load BioCLIP 2.5 via pybioclip's OpenCLIP-backed classifier path."""
+    import torch
+    from bioclip import CustomLabelsClassifier
+    from bioclip.predict import BaseClassifier, create_bioclip_tokenizer
+
+    class _CachedBioCLIP25Classifier(CustomLabelsClassifier):
+        def __init__(self, cls_ary: list[str], *, device: str) -> None:
+            # BaseClassifier delegates model and validation-transform loading to OpenCLIP.
+            # Its HF Hub schema accepts BIOCLIP25_MODEL_STR directly.
+            BaseClassifier.__init__(self, model_str=BIOCLIP25_MODEL_STR, device=device)
+            self.tokenizer = create_bioclip_tokenizer(self.model_str)
+            self.classes = [label.strip() for label in cls_ary]
+            self.cache_path, metadata = candidate_cache_path(
+                self.model_str, self.pretrained_str, self.classes, prompt_count=prompt_count
+            )
+            self.cache_hit = False
+            started = time.perf_counter()
+            txt_embeddings = None
+            try:
+                cached = torch.load(self.cache_path, map_location="cpu", weights_only=True)
+                if (
+                    cached.get("metadata") == metadata
+                    and tuple(cached["embeddings"].shape)[1] == len(self.classes)
+                ):
+                    self.txt_embeddings = cached["embeddings"].to(self.device)
+                    self.cache_hit = True
+                else:
+                    raise ValueError("cache metadata or embedding shape does not match")
+            except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
+                # Reuse and migrate the pre-prompt-count full-template cache, if present.
+                # Older BioCLIP 2.5 caches were produced with all available templates.
+                from bioclip.predict import OPENA_AI_IMAGENET_TEMPLATE
+
+                if prompt_count == len(OPENA_AI_IMAGENET_TEMPLATE):
+                    legacy_path, legacy_metadata = candidate_cache_path(
+                        self.model_str, self.pretrained_str, self.classes
+                    )
+                    try:
+                        legacy = torch.load(legacy_path, map_location="cpu", weights_only=True)
+                        if (
+                            legacy.get("metadata") == legacy_metadata
+                            and tuple(legacy["embeddings"].shape)[1] == len(self.classes)
+                        ):
+                            txt_embeddings = legacy["embeddings"].to(self.device)
+                            self.cache_hit = True
+                    except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
+                        pass
+                if txt_embeddings is None:
+                    txt_embeddings = encode_bioclip25_candidate_embeddings(
+                        self, self.classes, prompt_count=prompt_count, batch_size=32
+                    )
+                self.txt_embeddings = txt_embeddings
+                self.cache_path.parent.mkdir(parents=True, exist_ok=True)
+                temporary_path = self.cache_path.with_suffix(".tmp")
+                torch.save(
+                    {"metadata": metadata, "embeddings": self.txt_embeddings.detach().cpu()},
+                    temporary_path,
+                )
+                temporary_path.replace(self.cache_path)
+            self.candidate_seconds = time.perf_counter() - started
+
+    classifier = _CachedBioCLIP25Classifier(labels, device=device)
     return classifier, classifier.candidate_seconds, classifier.cache_hit, classifier.cache_path
 
 
@@ -375,9 +504,15 @@ def main() -> int:
             return 2
 
         effective_top_k = min(args.top_k, len(species))
-        print(f"Loading model (BioCLIP 2) on {args.device}...")
+        model_label = "BioCLIP 2.5 Huge" if args.model == "bioclip25" else "BioCLIP 2"
+        print(f"Loading model ({model_label}) on {args.device}...")
         model_started = time.perf_counter()
-        classifier, candidate_seconds, cache_hit, cache_path = build_classifier(list(species), args.device)
+        if args.model == "bioclip25":
+            classifier, candidate_seconds, cache_hit, cache_path = build_bioclip25_classifier(
+                list(species), args.device, prompt_count=args.prompt_count
+            )
+        else:
+            classifier, candidate_seconds, cache_hit, cache_path = build_classifier(list(species), args.device)
         stage_timings["model_load"] = time.perf_counter() - model_started - candidate_seconds
         stage_timings["candidate_text"] = candidate_seconds
         print(f"Model loaded in {stage_timings['model_load']:.3f}s.")
