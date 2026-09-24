@@ -2,7 +2,10 @@ import csv
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
+from megadetector_utils import MODEL_FILENAME, MODEL_URL, official_checkpoint
 from scan_birds import load_species, select_crop_result, DEFAULT_SIZE_GATE, parse_args
 from summarize_report import process
 
@@ -127,6 +130,45 @@ class CropSelectionTests(unittest.TestCase):
         for model in ("bioclip2", "bioclip25"):
             self.assertTrue(self.parse(["--model", model, "--crop"]).crop)
             self.assertFalse(self.parse(["--model", model, "--no-crop"]).crop)
+
+
+class MegaDetectorCheckpointTests(unittest.TestCase):
+    def test_existing_official_checkpoint_is_reused(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            checkpoint = Path(directory) / "checkpoints" / MODEL_FILENAME
+            checkpoint.parent.mkdir()
+            checkpoint.write_bytes(b"cached")
+            download = Mock()
+            torch = SimpleNamespace(hub=SimpleNamespace(get_dir=lambda: directory,
+                                                        download_url_to_file=download))
+            self.assertEqual(official_checkpoint(torch), checkpoint.resolve())
+            download.assert_not_called()
+
+    def test_missing_official_checkpoint_is_downloaded_to_torch_hub_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            def download(url: str, destination: str, progress: bool) -> None:
+                self.assertEqual(url, MODEL_URL)
+                self.assertTrue(progress)
+                Path(destination).write_bytes(b"official weights")
+
+            torch = SimpleNamespace(hub=SimpleNamespace(get_dir=lambda: directory,
+                                                        download_url_to_file=Mock(side_effect=download)))
+            checkpoint = official_checkpoint(torch)
+            self.assertEqual(checkpoint, (Path(directory) / "checkpoints" / MODEL_FILENAME).resolve())
+            self.assertEqual(checkpoint.read_bytes(), b"official weights")
+            self.assertEqual(list(checkpoint.parent.iterdir()), [checkpoint])
+
+    def test_failed_download_does_not_leave_a_checkpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            def download(url: str, destination: str, progress: bool) -> None:
+                Path(destination).write_bytes(b"partial")
+                raise OSError("download interrupted")
+
+            torch = SimpleNamespace(hub=SimpleNamespace(get_dir=lambda: directory,
+                                                        download_url_to_file=download))
+            with self.assertRaisesRegex(OSError, "download interrupted"):
+                official_checkpoint(torch)
+            self.assertEqual(list((Path(directory) / "checkpoints").iterdir()), [])
 
 
 if __name__ == "__main__":

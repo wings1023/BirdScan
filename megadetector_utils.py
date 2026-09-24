@@ -7,11 +7,30 @@ import importlib.metadata
 import math
 import os
 import sys
+import tempfile
 import types
 from pathlib import Path
 from typing import Any
 
 MODEL_VERSION = "MDV6-yolov10-e"
+MODEL_FILENAME = "MDV6-yolov10-e-1280.pt"
+MODEL_URL = "https://zenodo.org/records/15398270/files/MDV6-yolov10-e-1280.pt?download=1"
+
+
+def official_checkpoint(torch: Any) -> Path:
+    checkpoint = Path(torch.hub.get_dir()) / "checkpoints" / MODEL_FILENAME
+    if checkpoint.is_file():
+        return checkpoint.resolve()
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    # Download into the same directory, then expose the complete file atomically.
+    with tempfile.NamedTemporaryFile(dir=checkpoint.parent, suffix=".pt", delete=False) as temporary:
+        temporary_path = Path(temporary.name)
+    try:
+        torch.hub.download_url_to_file(MODEL_URL, str(temporary_path), progress=True)
+        temporary_path.replace(checkpoint)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+    return checkpoint.resolve()
 
 
 def load_detector(device: str) -> Any:
@@ -30,13 +49,9 @@ def load_detector(device: str) -> Any:
     from ultralytics.engine.predictor import BasePredictor
     import ultralytics.nn.tasks as ultralytics_tasks
 
-    # PyTorch-Wildlife's YOLOV8Base resolves this official V6 weight by name.
-    # Pass the already cached, fixed official path explicitly so this scope can
-    # never opt arbitrary/user-supplied checkpoint paths into unrestricted load.
-    checkpoint = Path.home() / ".cache" / "torch" / "hub" / "checkpoints" / "MDV6-yolov10-e-1280.pt"
-    if not checkpoint.is_file():
-        raise RuntimeError(f"MegaDetector 官方 checkpoint 不存在，未尝试下载：{checkpoint}")
-    checkpoint = checkpoint.resolve()
+    # PyTorch-Wildlife uses this official V6 URL and torch.hub checkpoint cache.
+    # Pass the fixed local path explicitly to scope unrestricted checkpoint load.
+    checkpoint = official_checkpoint(torch)
 
     original_setup_model = BasePredictor.setup_model
     original_torch_load = ultralytics_tasks.torch_load
