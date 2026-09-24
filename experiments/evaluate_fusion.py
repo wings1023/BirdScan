@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Offline evaluation of fusion rules for original and crop BioCLIP predictions."""
+"""Offline comparison of historical baseline, crop, and fusion strategies.
+
+The best_score crop input does not represent production's first-detection primary.
+"""
 
 from __future__ import annotations
 

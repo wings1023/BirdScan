@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Offline evaluation of bbox-size gating between baseline and crop predictions."""
+"""Offline evaluation of bbox-size gating between baseline and crop predictions.
+
+Inputs may use historical best_score crops, not production's first-detection primary.
+"""
 
 from __future__ import annotations
 

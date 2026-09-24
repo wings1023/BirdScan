@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Detect animals with MegaDetector V6 and save padded diagnostic crops.
+"""Standalone MegaDetector V6 detection and crop diagnostics.
 
 Bounding boxes are recorded as pixel coordinates in the original image,
 using (x, y, width, height) with the origin at the top-left.
+The historical margin=0.20 default here is experimental; production uses 0.30.
 """
 
 from __future__ import annotations

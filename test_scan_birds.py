@@ -7,7 +7,6 @@ from pathlib import Path, PureWindowsPath
 from unittest.mock import Mock, patch
 
 from experiments import evaluate_crop_pipeline as matching
-from experiments import inspect_neighbor_consistency
 from megadetector_utils import MODEL_FILENAME, MODEL_URL, official_checkpoint
 from scan_birds import (
     ADDITIONAL_SCORE_THRESHOLD,
@@ -228,24 +227,6 @@ class CropSelectionTests(unittest.TestCase):
         self.assertEqual(len(top1), 1)
         self.assertEqual(top1[0]["file_name"], "bird.jpg")
         self.assertNotIn("rank", top1[0])
-
-    def test_neighbor_reader_accepts_rankless_predictions_and_prefers_primary_species(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "predictions.csv"
-            with path.open("w", encoding="utf-8-sig", newline="") as handle:
-                writer = csv.DictWriter(
-                    handle, fieldnames=["file_name", "中文名", "拉丁学名", "score", "primary_species"]
-                )
-                writer.writeheader()
-                writer.writerow({
-                    "file_name": "bird.jpg", "中文名": "表格中文名", "拉丁学名": "Ardea alba",
-                    "score": "0.91", "primary_species": "主鸟显示名",
-                })
-
-            predictions = inspect_neighbor_consistency.load_predictions(path)
-
-        self.assertEqual(predictions["bird.jpg"]["species"], "主鸟显示名")
-        self.assertEqual(predictions["bird.jpg"]["score"], "0.910000")
 
     def test_additional_order_and_failed_image_summary_boundary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

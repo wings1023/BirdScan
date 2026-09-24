@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Experiment: MegaDetector crops -> BioCLIP 2.5 -> original-image aggregation."""
+"""Experimental MegaDetector crop, BioCLIP 2.5, and aggregation diagnostics.
+
+Historical margin=0.20, best_score aggregation, and rank/Top-K are for
+comparison, not BirdScan production defaults. Production uses the first
+detection's Top-1 as crop primary and crop margin=0.30.
+"""
 
 from __future__ import annotations
 
