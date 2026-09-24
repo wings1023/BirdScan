@@ -35,7 +35,7 @@ The default workflow uses BioCLIP 2.5 with MegaDetector crop, so a GPU-accelerat
 
 Lower-spec systems may still run. You can choose BioCLIP 2.0, reduce batch size, or use fewer BioCLIP 2.5 prompts. CPU is supported mainly for compatibility, debugging, or small-scale testing, and is not recommended for large photo batches.
 
-Choose the device explicitly; the program does not select one automatically:
+Explicitly specifying the device is recommended. The current default is `mps`.
 
 - Apple Silicon: --device mps
 - Windows / Linux NVIDIA: --device cuda
@@ -66,15 +66,25 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 ~~~
 
+On some systems, PowerShell's execution policy may block script activation. You can skip activation without changing the policy and call the virtual environment's Python directly, for example:
+
+~~~powershell
+.\.venv\Scripts\python.exe scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
+~~~
+
 For an NVIDIA GPU, first use the [official PyTorch installation page](https://pytorch.org/get-started/locally/) to choose the CUDA installation command for your system, then install the project dependencies:
 
 ~~~powershell
 python -m pip install -r requirements.txt
 ~~~
 
+If you did not activate the environment, use `.\.venv\Scripts\python.exe` in place of `python` when installing dependencies.
+
 ## Run
 
 The main workflow is: install BirdScan → prepare a candidate species table (you can start with the repository's species.xlsx) → run scan_birds.py → review the output. A single scan writes the core reports; you normally do not need to run another script. BioCLIP 2.5 and crop are both enabled by default, so you do not need to specify them:
+
+Photo folders support JPG, JPEG, and PNG. Sony ARW and other RAW files are not currently supported.
 
 ### macOS Apple Silicon
 
@@ -82,7 +92,7 @@ The main workflow is: install BirdScan → prepare a candidate species table (yo
 python scan_birds.py "/path/to/photos" --species-file species.xlsx --device mps
 ~~~
 
-### Windows / Linux NVIDIA
+### Windows + NVIDIA
 
 ~~~bash
 python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
@@ -116,11 +126,13 @@ You can use a custom candidate table; the repository's species.xlsx is a ready-t
 
 Bird ID and Latin name must be non-empty, and each Latin name must be unique. Bird IDs do not need to be unique; Chinese and English names may be blank. BioCLIP uses the Latin name as the candidate label. A pool tailored to the location and season is usually more useful for screening; species outside the table will not appear in the results.
 
-The first run may download the BioCLIP model and MegaDetector weights and build text embeddings for the candidate species. Candidate embeddings are cached under .cache/birdscan/ in your user directory and can be reused for the same model, candidate list, and prompt configuration.
+The first run requires an internet connection. If the corresponding cache is not already present, BirdScan downloads the BioCLIP model; the default crop workflow also downloads MegaDetector weights on first use and builds text-embedding cache for the candidate species. The first run is usually noticeably slower than later runs. Later runs reuse available models, weights, and embedding cache. Candidate embeddings are cached under .cache/birdscan/ in your user directory and can be reused for the same model, candidate list, and prompt configuration.
 
 ## Output files
 
 Reports are written to reports/ by default. This directory is Git ignored and contains local run output.
+
+For your first run, start with predictions.csv, then check run_summary.txt for the number of scanned photos, failures, and elapsed time.
 
 - **predictions.csv:** final Top-K results for each successfully classified photo, with file_name, rank, Bird ID, Chinese name, Latin name, English name, score, and these crop diagnostics:
   - final_source, crop_used

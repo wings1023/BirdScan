@@ -35,7 +35,7 @@ Crop 默认开启。MegaDetector detection threshold 默认是 0.15，crop margi
 
 低于上述配置仍可能运行。可以选择 BioCLIP 2.0、减小 batch size，或减少 BioCLIP 2.5 的 prompt count。CPU 设备受支持，主要用于兼容、调试或小规模测试，不建议用于大批量照片处理。
 
-设备参数由用户指定，程序不会自动选择设备：
+建议显式指定设备；当前默认值为 `mps`。
 
 - Apple Silicon：--device mps
 - Windows / Linux NVIDIA：--device cuda
@@ -66,15 +66,25 @@ python -m venv .venv
 .venv\Scripts\Activate.ps1
 ~~~
 
+某些系统的 PowerShell execution policy 可能会阻止激活脚本。无需修改策略，可以跳过激活并直接使用虚拟环境中的 Python，例如：
+
+~~~powershell
+.\.venv\Scripts\python.exe scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
+~~~
+
 使用 NVIDIA GPU 时，先通过 [PyTorch 官方安装页面](https://pytorch.org/get-started/locally/)选择适合本机的 CUDA 安装命令，再安装项目依赖：
 
 ~~~powershell
 python -m pip install -r requirements.txt
 ~~~
 
+如果没有激活虚拟环境，可在安装依赖时将 `python` 替换为 `.\.venv\Scripts\python.exe`。
+
 ## 运行
 
 主流程是：安装 BirdScan → 准备候选鸟种表（可先用仓库提供的 species.xlsx）→ 运行 scan_birds.py → 查看输出报告。一次扫描会直接生成主要结果；通常不需要再运行其他脚本。BioCLIP 2.5 和 crop 均为默认设置，无需额外指定：
+
+照片目录支持 JPG、JPEG 和 PNG；Sony ARW 等 RAW 文件当前不支持。
 
 ### macOS Apple Silicon
 
@@ -82,7 +92,7 @@ python -m pip install -r requirements.txt
 python scan_birds.py "/path/to/photos" --species-file species.xlsx --device mps
 ~~~
 
-### Windows / Linux NVIDIA
+### Windows + NVIDIA
 
 ~~~bash
 python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
@@ -116,11 +126,13 @@ python scan_birds.py --help
 
 鸟种编号和拉丁学名必须非空，拉丁学名必须唯一；鸟种编号不要求唯一，中文名和英文名称可以留空。BioCLIP 使用拉丁学名作为候选标签。候选池越贴近拍摄地区和季节，通常越适合初筛；不在候选表中的物种不会出现在结果中。
 
-第一次运行可能需要从 Hugging Face 下载 BioCLIP 模型和 MegaDetector 权重，并为候选物种构建文本 embedding cache。候选 embedding 缓存在用户目录下的 .cache/birdscan/，相同模型、候选物种及 prompt 配置可复用缓存。
+首次运行需要联网。本机没有对应缓存时，程序会下载 BioCLIP 模型；默认 crop 流程首次使用时还会下载 MegaDetector 权重，并为候选物种构建文本 embedding cache。第一次运行通常明显慢于后续运行；之后会复用已有模型、权重和 embedding 缓存。候选 embedding 缓存在用户目录下的 .cache/birdscan/，相同模型、候选物种及 prompt 配置可复用缓存。
 
 ## 输出文件
 
 默认报告写入 reports/。该目录已加入 Git 忽略规则，属于本地运行输出。
+
+第一次使用建议先查看 predictions.csv，再查看 run_summary.txt，确认扫描数量、失败数量和耗时。
 
 - **predictions.csv：** 每张成功照片的最终 Top-K 结果，含 file_name、rank、鸟种编号、中文名、拉丁学名、英文名称、score，以及以下 crop 诊断字段：
   - final_source、crop_used
