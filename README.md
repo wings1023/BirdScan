@@ -16,15 +16,14 @@ BirdScan 想解决的是整批照片的筛查和整理：先让 AI 把照片跑�
 原图
 → BioCLIP baseline 分类
 → MegaDetector V6 检测动物并生成多个 crop
-→ 使用同一个 BioCLIP 模型对所有 crop 分类
-→ 选择 BioCLIP Top-1 score 最高的 crop（best_score）
-→ 检查该 crop 对应 bbox 的面积比例
-→ bbox area ratio <= 0.08：采用 crop 结果
-→ 否则：保留原图 baseline
-→ 无检测或该原图没有可分类的 crop：回退 baseline
+→ 使用同一个 BioCLIP 模型对所有 crop 分类，每个 detection 只取 Top-1
+→ first detection 的 Top-1 作为 primary；bbox area ratio <= 0.08 时采用，否则保留原图 baseline
+→ 无有效 detection 或 crop 分类失败时回退 baseline
+→ 其余 detections 的 Top-1 仅在 score >= 0.90 且物种不同/未重复时列为 additional species
+→ additional species 不覆盖 primary
 ~~~
 
-Crop 默认开启。MegaDetector detection threshold 默认是 0.15，crop margin 默认是 0.20，size gate 默认是 0.08。使用 --no-crop 可只对原图运行 BioCLIP；--crop 可显式启用默认 crop 流程。阈值和 margin 当前不是普通 CLI 参数。
+Crop 默认开启。MegaDetector detection threshold=0.15 是内部设置，crop margin 默认是 0.30，size gate 默认是 0.08。使用 --no-crop 可只对原图运行 BioCLIP；--crop 可显式启用默认 crop 流程。MegaDetector detection threshold 和 margin 不是普通 CLI 参数。
 
 ## 推荐硬件
 
@@ -106,8 +105,8 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 - --no-crop：关闭 crop，直接使用原图 baseline。
 - --prompt-count N：BioCLIP 2.5 每个候选物种使用的模板数，范围为 1–80，默认 80。
 - --batch-size N：每批分类的图片数，默认 16；资源较少时可调低。
-- --top-k N：每张照片保存的候选数，默认 Top-3；可指定其他大于等于 1 的数量。
-- --threshold N：Top-1 score 低于该值的照片写入 uncertain.csv，默认 0.5。
+- --top-k N：原图 BioCLIP 请求的候选数，正式默认值为 1；显式指定大于 1 仅影响内部推理，正式报告仍每张图只输出一行 primary。实验和诊断脚本可独立使用 Top-K。
+- --threshold N：仅用于 uncertain.csv 判定；最终 primary Top-1 score 低于该值时列入该文件，默认 0.5。它不改变 MegaDetector detection threshold。
 - --output-dir DIR：报告目录。默认 BioCLIP 2.5 写入 reports/bird_report_bioclip25/；BioCLIP 2.0 写入 reports/bird_report/。
 
 参数名和其他选项可通过以下命令查看：
@@ -124,7 +123,7 @@ python scan_birds.py --help
 鸟种编号,中文名,拉丁学名,英文名称
 ~~~
 
-鸟种编号和拉丁学名必须非空，拉丁学名必须唯一；鸟种编号不要求唯一，中文名和英文名称可以留空。BioCLIP 使用拉丁学名作为候选标签。候选池越贴近拍摄地区和季节，通常越适合初筛；不在候选表中的物种不会出现在结果中。
+鸟种编号和拉丁学名必须非空，拉丁学名必须唯一；鸟种编号不要求唯一，中文名和英文名称可以留空。BioCLIP 使用拉丁学名作为候选标签。报告显示物种名时优先使用中文名，其次英文名称，最后回退到拉丁名。候选池越贴近拍摄地区和季节，通常越适合初筛；不在候选表中的物种不会出现在结果中。
 
 首次运行需要联网。本机没有对应缓存时，程序会下载 BioCLIP 模型；默认 crop 流程首次使用时还会下载 MegaDetector 权重，并为候选物种构建文本 embedding cache。第一次运行通常明显慢于后续运行；之后会复用已有模型、权重和 embedding 缓存。候选 embedding 缓存在用户目录下的 .cache/birdscan/，相同模型、候选物种及 prompt 配置可复用缓存。
 
@@ -134,32 +133,25 @@ python scan_birds.py --help
 
 第一次使用建议先查看 predictions.csv，再查看 run_summary.txt，确认扫描数量、失败数量和耗时。
 
-- **predictions.csv：** 每张成功照片的最终 Top-K 结果，含 file_name、rank、鸟种编号、中文名、拉丁学名、英文名称、score，以及以下 crop 诊断字段：
-  - final_source、crop_used
-  - selected_crop_file、detection_confidence、bbox_area_ratio
-  - baseline_top1_species、baseline_top1_score
-  - crop_top1_species、crop_top1_score
-- **species_summary.csv：** 按物种汇总 top1_count、topk_count、max_score 和 best_image。
+- **predictions.csv：** 每张成功照片一行 primary Top-1，不含 rank；保留 file_name、鸟种编号、中文名、拉丁学名、英文名称、score，并新增 primary_species、primary_score、additional_species、additional_scores、additional_count：
+  - additional_species 与 additional_scores 按相同顺序以 `|` 分隔；它们只来自其他 detections 的 Top-1。
+  - additional species 需达到 score 0.90，物种间去重且不重复 primary，不会改变 primary。
+  - baseline_top1_species、crop_top1_species、primary_species、additional_species 使用显示名：中文名优先，其次英文名称，最后回退拉丁名。
+  - 另含以下 crop 诊断字段：
+    - final_source、crop_used
+    - selected_crop_file、detection_confidence、bbox_area_ratio
+    - baseline_top1_species、baseline_top1_score
+    - crop_top1_species、crop_top1_score
+- **species_summary.csv：** 仅统计进入 predictions.csv 的成功图片，按物种汇总 primary_count、additional_count、max_score 和 best_image。max_score 是该物种在 primary 与 additional 中出现过的最高分，best_image 是该最高分所在图片；不再使用旧 Top-K 计数字段。
 - **uncertain.csv：** Top-1 score 低于 threshold 的照片。
 - **run_summary.txt：** 扫描与失败数量、各阶段耗时和整体速度。
 
-predictions.csv 的 file_name 始终指向原始照片。启用 crop 时，final_source 表示最终采用 baseline 还是 crop；crop_used 表示是否采用 crop。selected_crop_file、detection_confidence 和 bbox_area_ratio 记录最高分 crop 的检测信息。使用 --no-crop 时，final_source 为 baseline，crop 专属字段留空。
-
-## 可选：离线审阅与后处理
-
-如需对已有扫描结果进行进一步物种审阅或筛选，可以选择运行 summarize_report.py。它直接读取已有的 species_summary.csv，不会重新运行模型或重新扫描照片；适合对历史结果重新计算审阅字段：
-
-~~~bash
-python summarize_report.py reports/bird_report_bioclip25/species_summary.csv
-~~~
-
-这是可选后处理，不属于 scan_birds.py 主流程的必需步骤。脚本不会覆盖输入文件；默认在同一目录生成 species_summary_reviewed.csv，并增加 topk_only_count、topk_top1_ratio、confidence_level 和 special_flag，供人工审阅批次结果使用。
+predictions.csv 的 file_name 始终指向原始照片。启用 crop 时，final_source 表示 primary 采用 baseline 还是 first detection crop；crop_used 表示是否采用 crop。selected_crop_file、detection_confidence 和 bbox_area_ratio 记录 primary detection 的信息。使用 --no-crop 时，final_source 为 baseline，crop 专属字段留空。
 
 ## 项目文件
 
 - scan_birds.py：主入口，扫描照片、运行原图与 crop 分类并写出报告。
 - megadetector_utils.py：MegaDetector V6 加载及 detection / crop 支持。
-- summarize_report.py：读取物种汇总并生成审阅版报告。
 - test_scan_birds.py：自动化测试。
 
 ~~~text

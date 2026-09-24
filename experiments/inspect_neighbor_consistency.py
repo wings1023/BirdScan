@@ -57,32 +57,37 @@ def load_predictions(path: Path) -> dict[str, dict[str, str]]:
     result: dict[str, dict[str, str]] = {}
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         reader = csv.DictReader(handle)
-        required = {"file_name", "rank", "score"}
+        required = {"file_name", "score"}
         if not reader.fieldnames or not required.issubset(reader.fieldnames):
-            raise ValueError("predictions.csv must contain file_name, rank, and score columns")
+            raise ValueError("predictions.csv must contain file_name and score columns")
+        has_rank = "rank" in reader.fieldnames
         for row in reader:
-            if (row.get("rank") or "").strip() != "1":
+            if has_rank and (row.get("rank") or "").strip() != "1":
                 continue
             name = (row.get("file_name") or "").strip()
             key = normalized_path(name)
             if not key:
-                raise ValueError("predictions.csv contains an empty file_name for rank 1")
+                raise ValueError("predictions.csv contains an empty file_name")
             if key in result:
-                raise ValueError(f"Duplicate rank-1 prediction path after normalization: {name}")
+                raise ValueError(f"Duplicate prediction path after normalization: {name}")
             try:
                 score = float(row["score"])
             except (TypeError, ValueError) as exc:
-                raise ValueError(f"Invalid rank-1 score for {name}: {row.get('score')!r}") from exc
-            species = (row.get("中文名") or "").strip() or (row.get("拉丁学名") or "").strip()
+                raise ValueError(f"Invalid prediction score for {name}: {row.get('score')!r}") from exc
+            species = (
+                (row.get("primary_species") or "").strip()
+                or (row.get("中文名") or "").strip()
+                or (row.get("拉丁学名") or "").strip()
+            )
             if not species:
-                raise ValueError(f"Rank-1 prediction has blank 中文名 and 拉丁学名: {name}")
+                raise ValueError(f"Prediction has blank primary_species, 中文名, and 拉丁学名: {name}")
             result[key] = {
                 "file_name": name,
                 "species": species,
                 "score": f"{score:.6f}",
             }
     if not result:
-        raise ValueError("No rank-1 prediction rows found")
+        raise ValueError("No prediction rows found")
     return result
 
 
@@ -331,13 +336,13 @@ def main() -> int:
         predictions = load_predictions(args.predictions_csv)
         matrix_names, matrix = load_similarity_matrix(args.embedding_csv)
         pairs, missing_embeddings, missing_predictions = align_files(predictions, matrix_names)
-        print(f"Predictions rank-1 images: {len(predictions)}")
+        print(f"Prediction images: {len(predictions)}")
         print(f"Embedding matrix images: {len(matrix_names)}")
         print(f"Successfully matched: {len(pairs)}")
         print("Predictions without matching embedding entry:")
         for name in missing_embeddings or ["(none)"]:
             print(f"  - {name}")
-        print("Embedding entries without matching rank-1 prediction:")
+        print("Embedding entries without matching prediction:")
         for name in missing_predictions or ["(none)"]:
             print(f"  - {name}")
         if not pairs:

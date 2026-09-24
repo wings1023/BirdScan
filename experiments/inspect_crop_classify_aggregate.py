@@ -212,7 +212,7 @@ def enrich_crop_predictions(
             **record,
             "status": "predicted",
             # pybioclip returns each image's Top-K in descending order without
-            # a rank field; scan_birds.write_reports assigns rank by row order.
+            # a rank field; this experiment assigns rank by row order.
             "rank": len(crop_rows) + 1,
             "species": species[latin_name],
             "score": float(prediction["score"]),

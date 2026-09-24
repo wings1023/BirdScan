@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Batch bird identification with BioCLIP 2 and a user-supplied species list.
+"""Batch bird identification with BioCLIP 2.5 by default and a user-supplied species list.
 
 The script only reads image files.  It writes reports to the selected output
 directory and never renames, moves, edits, or embeds metadata in source photos.
@@ -17,7 +17,7 @@ import traceback
 import xml.etree.ElementTree as ET
 import zipfile
 from collections import Counter
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import Any, Iterable
 
 
@@ -31,24 +31,69 @@ CACHE_DIR = Path.home() / ".cache" / "birdscan"
 BIOCLIP25_MODEL_STR = "hf-hub:imageomics/bioclip-2.5-vith14"
 DEFAULT_SIZE_GATE = 0.08
 DEFAULT_DETECTION_THRESHOLD = 0.15
-DEFAULT_CROP_MARGIN = 0.20
+DEFAULT_CROP_MARGIN = 0.30
+ADDITIONAL_SCORE_THRESHOLD = 0.90
+CROP_TOP_K = 1
 
 
 def select_crop_result(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, bool]:
-    """Select highest crop Top-1 score, then apply the bbox area gate."""
+    """Select detection 1 as primary, then apply the existing bbox area gate."""
     if not candidates:
         return None, False
-    best = max(candidates, key=lambda item: float(item["prediction"]["score"]))
-    return best, float(best["record"]["area"]) <= DEFAULT_SIZE_GATE
+    has_detection_indices = any("detection_index" in item["record"] for item in candidates)
+    primary = next(
+        (item for item in candidates if int(item["record"].get("detection_index", 0)) == 1),
+        None,
+    ) if has_detection_indices else candidates[0]
+    if primary is None:
+        return None, False
+    return primary, float(primary["record"]["area"]) <= DEFAULT_SIZE_GATE
+
+
+def select_primary_and_additional(
+    candidates: list[dict[str, Any]], baseline_top: dict[str, Any] | None,
+) -> tuple[dict[str, Any] | None, bool, dict[str, Any] | None, list[dict[str, Any]]]:
+    """Keep first detection (or baseline fallback) primary and deduplicate later Top-1 species."""
+    first_detection = [
+        item for item in candidates
+        if int(item["record"].get("detection_index", 1)) == 1
+    ]
+    primary_crop, use_crop = select_crop_result(first_detection)
+    primary = primary_crop["prediction"] if use_crop and primary_crop else baseline_top
+    primary_species = str((primary or {}).get("classification", "") or "")
+
+    additional_by_species: dict[str, dict[str, Any]] = {}
+    for item in sorted(candidates, key=lambda candidate: int(candidate["record"].get("detection_index", 0))):
+        if int(item["record"].get("detection_index", 0)) == 1:
+            continue
+        prediction = item["prediction"]
+        species_name = str(prediction.get("classification", "") or "")
+        score = float(prediction["score"])
+        if not species_name or species_name == primary_species or score < ADDITIONAL_SCORE_THRESHOLD:
+            continue
+        existing = additional_by_species.get(species_name)
+        if existing is None or score > float(existing["prediction"]["score"]):
+            additional_by_species[species_name] = item
+    return primary, use_crop, primary_crop, list(additional_by_species.values())
+
+
+def relative_file_key(image_path: str | PurePath, photo_dir: PurePath) -> str:
+    """Use one POSIX-style relative key for report rows and diagnostics."""
+    path = image_path if isinstance(image_path, PurePath) else Path(image_path)
+    try:
+        return path.relative_to(photo_dir).as_posix()
+    except ValueError:
+        return path.as_posix()
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Use BioCLIP 2 to identify birds in a photo folder. Source photos are read only."
+        description="Use BioCLIP 2.5 by default to identify birds in a photo folder. Source photos are read only."
     )
     parser.add_argument("photo_dir", type=Path, help="Folder to scan recursively for JPG/JPEG/PNG files")
     parser.add_argument("--species-file", required=True, type=Path, help="Candidate species CSV or .xlsx file")
-    parser.add_argument("--top-k", type=int, default=3, help="Predictions saved per image (default: 3)")
+    parser.add_argument("--top-k", type=int, default=1,
+                        help="Internal original-image inference candidates (default: 1); reports show primary Top-1")
     parser.add_argument("--batch-size", type=int, default=16, help="Images per BioCLIP inference batch (default: 16)")
     parser.add_argument("--threshold", type=float, default=0.5, help="Top-1 uncertainty threshold (default: 0.5)")
     parser.add_argument("--device", default="mps", help="BioCLIP device, e.g. mps or cpu (default: mps)")
@@ -413,6 +458,17 @@ def write_csv(path: Path, fields: list[str], rows: Iterable[dict[str, Any]]) -> 
         writer.writerows(rows)
 
 
+def species_display_name(latin_name: str, species: dict[str, dict[str, str]]) -> str:
+    """Return the best human-readable name while keeping Latin names as identifiers."""
+    latin_name = str(latin_name or "").strip()
+    record = species.get(latin_name, {})
+    return (
+        str(record.get("中文名", "") or "").strip()
+        or str(record.get("英文名称", "") or "").strip()
+        or latin_name
+    )
+
+
 def write_reports(
     output_dir: Path,
     photo_dir: Path,
@@ -427,62 +483,86 @@ def write_reports(
 ) -> float:
     report_started = time.perf_counter()
     output_dir.mkdir(parents=True, exist_ok=True)
-    prediction_fields = ["file_name", "rank", *REQUIRED_COLUMNS, "score", "final_source", "crop_used", "selected_crop_file", "detection_confidence", "bbox_area_ratio", "baseline_top1_species", "baseline_top1_score", "crop_top1_species", "crop_top1_score"]
+    prediction_fields = [
+        "file_name", *REQUIRED_COLUMNS, "score", "final_source", "crop_used",
+        "selected_crop_file", "detection_confidence", "bbox_area_ratio",
+        "baseline_top1_species", "baseline_top1_score", "crop_top1_species", "crop_top1_score",
+        "primary_species", "primary_score", "additional_species", "additional_scores", "additional_count",
+    ]
     rows: list[dict[str, Any]] = []
     by_file: dict[str, list[dict[str, Any]]] = {}
     for item in predictions:
-        image_path = Path(item["file_name"])
-        try:
-            file_name = str(image_path.relative_to(photo_dir))
-        except ValueError:
-            file_name = str(image_path)
+        file_name = relative_file_key(item["file_name"], photo_dir)
         latin_name = item["classification"]
-        row = {"file_name": file_name, **species[latin_name], "score": f"{float(item['score']):.6f}", **(diagnostics or {}).get(file_name, {})}
+        report_diagnostics = dict((diagnostics or {}).get(file_name, {}))
+        for field in ("baseline_top1_species", "crop_top1_species", "primary_species"):
+            report_diagnostics[field] = species_display_name(report_diagnostics.get(field, ""), species)
+        additional_latin = [
+            name for name in str(report_diagnostics.get("additional_species", "")).split("|") if name
+        ]
+        report_diagnostics["additional_species"] = "|".join(
+            species_display_name(name, species) for name in additional_latin
+        )
+        row = {
+            "file_name": file_name,
+            **species[latin_name],
+            "score": f"{float(item['score']):.6f}",
+            **report_diagnostics,
+        }
         by_file.setdefault(file_name, []).append(row)
 
     for file_name, file_rows in sorted(by_file.items()):
-        for rank, row in enumerate(file_rows, start=1):
-            rows.append({**row, "file_name": file_name, "rank": rank})
+        rows.append({**file_rows[0], "file_name": file_name})
     write_csv(output_dir / "predictions.csv", prediction_fields, rows)
 
-    top1 = {file_name: file_rows[0] for file_name, file_rows in by_file.items() if file_rows}
-    top1_counts = Counter(row["拉丁学名"] for row in top1.values())
-    topk_counts = Counter(row["拉丁学名"] for file_rows in by_file.values() for row in file_rows)
+    primary_rows = {file_name: file_rows[0] for file_name, file_rows in by_file.items() if file_rows}
+    primary_counts = Counter(row["拉丁学名"] for row in primary_rows.values())
+    additional_counts: Counter[str] = Counter()
     best: dict[str, tuple[float, str]] = {}
-    for file_name, file_rows in by_file.items():
-        for row in file_rows:
-            score = float(row["score"])
-            name = row["拉丁学名"]
+    for file_name, row in primary_rows.items():
+        score = float(row["score"])
+        name = row["拉丁学名"]
+        if name not in best or score > best[name][0]:
+            best[name] = (score, file_name)
+    for file_name, diagnostic in (diagnostics or {}).items():
+        # Only successful formal predictions contribute to the species summary.
+        if file_name not in primary_rows:
+            continue
+        additional_names = [name for name in str(diagnostic.get("additional_species", "")).split("|") if name]
+        additional_scores = [value for value in str(diagnostic.get("additional_scores", "")).split("|") if value]
+        for name, score_text in zip(additional_names, additional_scores):
+            score = float(score_text)
+            additional_counts[name] += 1
             if name not in best or score > best[name][0]:
                 best[name] = (score, file_name)
     summary_rows = []
-    for latin_name in sorted(topk_counts):
+    for latin_name in sorted(set(primary_counts) | set(additional_counts)):
         score, image_name = best[latin_name]
         summary_rows.append({
             **species[latin_name],
-            "top1_count": top1_counts[latin_name],
-            "topk_count": topk_counts[latin_name],
+            "primary_count": primary_counts[latin_name],
+            "additional_count": additional_counts[latin_name],
             "max_score": f"{score:.6f}",
             "best_image": image_name,
         })
-    summary_fields = [*REQUIRED_COLUMNS, "top1_count", "topk_count", "max_score", "best_image"]
+    summary_fields = [*REQUIRED_COLUMNS, "primary_count", "additional_count", "max_score", "best_image"]
     write_csv(output_dir / "species_summary.csv", summary_fields, summary_rows)
 
     uncertain_rows = [
         {"file_name": file_name, **row}
-        for file_name, row in sorted(top1.items())
+        for file_name, row in sorted(primary_rows.items())
         if float(row["score"]) < threshold
     ]
     write_csv(output_dir / "uncertain.csv", ["file_name", *REQUIRED_COLUMNS, "score"], uncertain_rows)
     stage_timings["report_writing"] = time.perf_counter() - report_started
     elapsed_seconds += stage_timings["report_writing"]
 
-    success_count = len(top1)
+    success_count = len(primary_rows)
     summary = [
         f"Scanned photos: {scanned_count}",
         f"Successful: {success_count}",
         f"Failed: {len(failures)}",
-        f"Distinct Top-1 species: {len(top1_counts)}",
+        f"Distinct primary species: {len(primary_counts)}",
         "",
         "Stage timings (seconds):",
         f"Species file read: {stage_timings['species_file']:.3f}",
@@ -578,7 +658,8 @@ def main() -> int:
                             continue
                         crop_path = crop_root / f"{hashlib.sha1(key.encode()).hexdigest()[:12]}__det{index:02d}{source.suffix.lower()}"
                         image.crop(bounds).save(crop_path)
-                        record = {"path": crop_path, "source": key, "confidence": confidence, "area": area_ratio,
+                        record = {"path": crop_path, "source": key, "confidence": confidence,
+                                  "detection_index": index, "area": area_ratio,
                                   "crop_file": crop_path.relative_to(args.output_dir).as_posix()}
                         per_source[key].append(record)
                         crops.append(record)
@@ -588,37 +669,45 @@ def main() -> int:
             crop_predictions: list[dict[str, Any]] = []
             crop_failures: list[tuple[Path, str]] = []
             if crops:
-                crop_predictions, crop_failures = predict_resiliently(classifier, [c["path"] for c in crops], effective_top_k, args.batch_size)
+                crop_predictions, crop_failures = predict_resiliently(
+                    classifier, [c["path"] for c in crops], CROP_TOP_K, args.batch_size
+                )
             crop_rows_by_path: dict[str, list[dict[str, Any]]] = {}
             for item in crop_predictions:
                 crop_rows_by_path.setdefault(Path(item["file_name"]).resolve().as_posix(), []).append(item)
+            final_predictions: list[dict[str, Any]] = []
             for source in valid_paths:
                 key = source.resolve().as_posix()
                 base_rows = baseline_by_file.get(key, [])
-                baseline_top = base_rows[0] if base_rows else None
+                baseline_top = max(base_rows, key=lambda row: float(row["score"])) if base_rows else None
                 candidates = []
                 for record in per_source.get(key, []):
                     ranked_rows = crop_rows_by_path.get(record["path"].resolve().as_posix(), [])
                     if ranked_rows:
                         top1 = max(ranked_rows, key=lambda item: float(item["score"]))
                         candidates.append({"record": record, "prediction": top1})
-                best, use_crop = select_crop_result(candidates)
-                if use_crop:
-                    selected_path = best["record"]["path"].resolve().as_posix()
-                    chosen = [dict(p, file_name=str(source)) for p in crop_predictions if Path(p["file_name"]).resolve().as_posix() == selected_path]
-                    chosen.sort(key=lambda p: -float(p["score"]))
-                    predictions = [p for p in predictions if Path(p["file_name"]).resolve().as_posix() != key] + chosen
-                record = best["record"] if best else None
-                diagnostics[source.relative_to(args.photo_dir).as_posix()] = {
+                primary, use_crop, primary_candidate, additional = select_primary_and_additional(
+                    candidates, baseline_top
+                )
+                if primary:
+                    final_predictions.append(dict(primary, file_name=str(source)))
+                record = primary_candidate["record"] if use_crop and primary_candidate else None
+                diagnostics[relative_file_key(source, args.photo_dir)] = {
                     "final_source": "crop" if use_crop else "baseline", "crop_used": "true" if use_crop else "false",
                     "selected_crop_file": record["crop_file"] if record else "",
                     "detection_confidence": f"{record['confidence']:.6f}" if record else "",
                     "bbox_area_ratio": f"{record['area']:.8f}" if record else "",
                     "baseline_top1_species": baseline_top.get("classification", "") if baseline_top else "",
                     "baseline_top1_score": f"{float(baseline_top['score']):.6f}" if baseline_top else "",
-                    "crop_top1_species": best["prediction"].get("classification", "") if best else "",
-                    "crop_top1_score": f"{float(best['prediction']['score']):.6f}" if best else "",
+                    "crop_top1_species": primary_candidate["prediction"].get("classification", "") if primary_candidate else "",
+                    "crop_top1_score": f"{float(primary_candidate['prediction']['score']):.6f}" if primary_candidate else "",
+                    "primary_species": primary.get("classification", "") if primary else "",
+                    "primary_score": f"{float(primary['score']):.6f}" if primary else "",
+                    "additional_species": "|".join(item["prediction"]["classification"] for item in additional),
+                    "additional_scores": "|".join(f"{float(item['prediction']['score']):.6f}" for item in additional),
+                    "additional_count": len(additional),
                 }
+            predictions = final_predictions
             if crop_failures:
                 print(f"Crop classification failures: {len(crop_failures)}; affected images use baseline where no valid crop remains.", file=sys.stderr)
         else:
@@ -630,17 +719,30 @@ def main() -> int:
                     baseline_rows[key] = item
             for source in valid_paths:
                 baseline_top = baseline_rows.get(source.resolve().as_posix())
-                diagnostics[source.relative_to(args.photo_dir).as_posix()] = {
+                diagnostics[relative_file_key(source, args.photo_dir)] = {
                     "final_source": "baseline", "crop_used": "false",
                     "baseline_top1_species": baseline_top.get("classification", "") if baseline_top else "",
                     "baseline_top1_score": f"{float(baseline_top['score']):.6f}" if baseline_top else "",
+                    "primary_species": baseline_top.get("classification", "") if baseline_top else "",
+                    "primary_score": f"{float(baseline_top['score']):.6f}" if baseline_top else "",
+                    "additional_species": "",
+                    "additional_scores": "",
+                    "additional_count": 0,
                 }
+            predictions = list(baseline_rows.values())
+        successful_keys = {relative_file_key(item["file_name"], args.photo_dir) for item in predictions}
+        failure_reasons = {relative_file_key(path, args.photo_dir): reason for path, reason in failures}
+        final_failures = [
+            (source, failure_reasons.get(relative_file_key(source, args.photo_dir), "No final prediction returned"))
+            for source in image_paths
+            if relative_file_key(source, args.photo_dir) not in successful_keys
+        ]
         print("Writing reports...")
-        write_reports(args.output_dir, args.photo_dir, predictions, species, failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings, diagnostics)
+        write_reports(args.output_dir, args.photo_dir, predictions, species, final_failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings, diagnostics)
         total_seconds = time.perf_counter() - started
         print(f"Reports written to: {args.output_dir.resolve()}")
         print(f"Timings — model load: {stage_timings['model_load']:.3f}s; candidate text: {stage_timings['candidate_text']:.3f}s; image inference: {stage_timings['image_inference']:.3f}s; report writing: {stage_timings['report_writing']:.3f}s; total: {total_seconds:.3f}s.")
-        return 0 if not prediction_failures else 2
+        return 0 if not final_failures else 2
     except (ValueError, OSError, csv.Error, zipfile.BadZipFile) as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return 2

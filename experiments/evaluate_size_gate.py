@@ -66,7 +66,7 @@ def dataset_records(name: str, gt_path: Path, baseline_path: Path,
     baseline_rows = matching.read_csv(baseline_path)
     best_rows = matching.read_csv(best_path)
     detection_rows = matching.read_csv(detections_path)
-    matching.require_columns(baseline_rows, baseline_path, {"rank", "中文名"})
+    matching.require_columns(baseline_rows, baseline_path, {"中文名"})
     matching.require_columns(best_rows, best_path, {"selected_species", "selected_crop_file"})
     matching.require_columns(
         detection_rows, detections_path,

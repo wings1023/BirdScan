@@ -16,15 +16,14 @@ BirdScan is meant to help with that batch-level work. It runs an initial, system
 Original image
 → BioCLIP baseline classification
 → MegaDetector V6 detects animals and generates crops
-→ classify all crops with the same selected BioCLIP model
-→ select the crop with the highest BioCLIP Top-1 score (best_score)
-→ check the selected bbox area ratio
-→ bbox area ratio <= 0.08: use the crop result
-→ otherwise: keep the original-image baseline
-→ no detection or no classifiable crop for an image: fall back to baseline
+→ classify all crops with the same BioCLIP model and keep only each detection's Top-1
+→ use the first detection's Top-1 as primary when bbox area ratio <= 0.08; otherwise keep the baseline
+→ fall back to baseline when there is no usable first detection or crop classification fails
+→ list other detections' Top-1 as additional species only when score >= 0.90 and the species is distinct and not repeated
+→ additional species never replace the primary
 ~~~
 
-Crop is enabled by default. The MegaDetector detection threshold defaults to 0.15, crop margin to 0.20, and size gate to 0.08. Use --no-crop to classify original images only; --crop explicitly enables the default crop workflow. The threshold and margin are not regular CLI options.
+Crop is enabled by default. MegaDetector detection threshold=0.15 is an internal setting; crop margin defaults to 0.30 and the size gate to 0.08. Use --no-crop to classify original images only; --crop explicitly enables the default crop workflow. The MegaDetector detection threshold and crop margin are not regular CLI options.
 
 ## Recommended hardware
 
@@ -106,8 +105,8 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 - --no-crop: disable crop and classify original images with the baseline.
 - --prompt-count N: templates per candidate species for BioCLIP 2.5; valid range 1–80, default 80.
 - --batch-size N: images per classification batch, default 16; reduce it on lower-resource systems.
-- --top-k N: candidates saved per photo, default Top-3; any value of 1 or greater can be specified.
-- --threshold N: photos with a Top-1 score below this value go to uncertain.csv; default 0.5.
+- --top-k N: candidates requested from original-image BioCLIP, default 1 for the formal workflow; explicit values above 1 affect internal inference only, while the user report still has one primary row per photo. Experiment and diagnostic scripts may use Top-K independently.
+- --threshold N: used only to decide uncertain.csv membership; a final primary Top-1 score below this value is listed there. Default 0.5. It does not change the MegaDetector detection threshold.
 - --output-dir DIR: report directory. By default BioCLIP 2.5 writes to reports/bird_report_bioclip25/ and BioCLIP 2.0 writes to reports/bird_report/.
 
 See all options with:
@@ -124,7 +123,7 @@ You can use a custom candidate table; the repository's species.xlsx is a ready-t
 鸟种编号,中文名,拉丁学名,英文名称
 ~~~
 
-Bird ID and Latin name must be non-empty, and each Latin name must be unique. Bird IDs do not need to be unique; Chinese and English names may be blank. BioCLIP uses the Latin name as the candidate label. A pool tailored to the location and season is usually more useful for screening; species outside the table will not appear in the results.
+Bird ID and Latin name must be non-empty, and each Latin name must be unique. Bird IDs do not need to be unique; Chinese and English names may be blank. BioCLIP uses the Latin name as the candidate label. Report display names use the Chinese name first, then the English name, and fall back to the Latin name. A pool tailored to the location and season is usually more useful for screening; species outside the table will not appear in the results.
 
 The first run requires an internet connection. If the corresponding cache is not already present, BirdScan downloads the BioCLIP model; the default crop workflow also downloads MegaDetector weights on first use and builds text-embedding cache for the candidate species. The first run is usually noticeably slower than later runs. Later runs reuse available models, weights, and embedding cache. Candidate embeddings are cached under .cache/birdscan/ in your user directory and can be reused for the same model, candidate list, and prompt configuration.
 
@@ -134,32 +133,25 @@ Reports are written to reports/ by default. This directory is Git ignored and co
 
 For your first run, start with predictions.csv, then check run_summary.txt for the number of scanned photos, failures, and elapsed time.
 
-- **predictions.csv:** final Top-K results for each successfully classified photo, with file_name, rank, Bird ID, Chinese name, Latin name, English name, score, and these crop diagnostics:
-  - final_source, crop_used
-  - selected_crop_file, detection_confidence, bbox_area_ratio
-  - baseline_top1_species, baseline_top1_score
-  - crop_top1_species, crop_top1_score
-- **species_summary.csv:** per-species top1_count, topk_count, max_score, and best_image.
+- **predictions.csv:** one primary Top-1 row per successfully classified photo, with no rank column. It retains file_name, Bird ID, Chinese name, Latin name, English name, and score, and adds primary_species, primary_score, additional_species, additional_scores, and additional_count:
+  - additional_species and additional_scores are pipe-separated in matching order and come only from other detections' Top-1.
+  - Additional species must score at least 0.90; duplicates and the primary species are excluded, and additional species never change the primary.
+  - baseline_top1_species, crop_top1_species, primary_species, and additional_species use Chinese display names when available, then English names, then Latin names.
+  - The file also includes these crop diagnostics:
+    - final_source, crop_used
+    - selected_crop_file, detection_confidence, bbox_area_ratio
+    - baseline_top1_species, baseline_top1_score
+    - crop_top1_species, crop_top1_score
+- **species_summary.csv:** summarizes only successfully classified photos present in predictions.csv, with per-species primary_count, additional_count, max_score, and best_image. max_score is the highest score for that species across primary and additional appearances; best_image is the photo where that score occurred. It no longer uses the legacy Top-K count field.
 - **uncertain.csv:** photos whose Top-1 score is below threshold.
 - **run_summary.txt:** scan and failure counts, stage timings, and overall speed.
 
-The file_name in predictions.csv always points to the original photo. With crop enabled, final_source says whether the baseline or a crop result was selected; crop_used indicates whether crop was used. selected_crop_file, detection_confidence, and bbox_area_ratio describe the highest-scoring crop candidate. With --no-crop, final_source is baseline and crop-specific fields are blank.
-
-## Optional: Offline review and post-processing
-
-If you want to review or filter species results further, you can optionally run summarize_report.py on an existing species_summary.csv. It reads that file directly and does not rerun the model or rescan photos, so it can also recalculate review fields for historical results:
-
-~~~bash
-python summarize_report.py reports/bird_report_bioclip25/species_summary.csv
-~~~
-
-This is optional post-processing, not a required step in the scan_birds.py workflow. The script does not overwrite the input; by default, it writes species_summary_reviewed.csv beside it and adds topk_only_count, topk_top1_ratio, confidence_level, and special_flag to support manual batch review.
+The file_name in predictions.csv always points to the original photo. With crop enabled, final_source says whether the baseline or first-detection crop was selected for primary; crop_used indicates whether crop was used. selected_crop_file, detection_confidence, and bbox_area_ratio describe the primary detection. With --no-crop, final_source is baseline and crop-specific fields are blank.
 
 ## Project files
 
 - scan_birds.py: main entry point for scanning photos, classifying originals and crops, and writing reports.
 - megadetector_utils.py: MegaDetector V6 loading and detection / crop support.
-- summarize_report.py: reads the species summary and creates a reviewed report.
 - test_scan_birds.py: automated tests.
 
 ~~~text

@@ -355,7 +355,7 @@ def evaluate(args: argparse.Namespace) -> None:
     detection_rows = read_csv(args.crop_detections)
     crop_prediction_rows = read_csv(args.crop_predictions)
 
-    require_columns(baseline_raw, args.baseline_predictions, {"rank", "中文名"})
+    require_columns(baseline_raw, args.baseline_predictions, {"中文名"})
     require_columns(first_rows, args.aggregated_first_detection, {"selected_species"})
     require_columns(best_rows, args.aggregated_best_score, {"selected_species"})
     require_columns(detection_rows, args.crop_detections, {"status", "crop_file", "detection_index"})

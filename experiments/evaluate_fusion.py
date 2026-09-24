@@ -68,7 +68,7 @@ def prediction_rows(truth: list[dict[str, str]], basename_counts: dict[str, int]
                     rows: list[dict[str, str]], path: Path, is_baseline: bool,
                     latin_to_chinese: dict[str, str] | None = None) -> dict[str, dict[str, Any]]:
     if is_baseline:
-        matching.require_columns(rows, path, {"rank", "中文名"})
+        matching.require_columns(rows, path, {"中文名"})
         prepared = matching.top1_rows(rows, path)
         name_fields, score_fields = ("中文名", "拉丁学名"), ("score",)
     else:
