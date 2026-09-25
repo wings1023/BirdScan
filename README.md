@@ -27,6 +27,14 @@ Crop 默认开启。MegaDetector detection threshold=0.15 是内部设置，crop
 
 完整的结果选择规则、参数作用层级与报告字段含义见 [识别决策链](docs/selection_pipeline.md)。
 
+## 运行示例
+
+下图展示 BirdScan 的一次实际运行，以及对应的识别结果。BirdScan 用于第一轮筛查；建议结合原图和人工判断复核结果。
+
+![BirdScan 实际运行界面](docs/images/run.png)
+
+![BirdScan 识别结果](docs/images/result-prediction.png)
+
 ## 推荐硬件
 
 默认工作流使用 BioCLIP 2.5 和 MegaDetector crop，建议使用 GPU 加速设备。以下是稳妥的推荐配置，不是严格最低要求：
@@ -117,6 +125,15 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 ~~~bash
 python scan_birds.py --help
 ~~~
+
+## 示例数据集
+
+仓库提供了一个小型可复现实测集：
+
+- `examples/sample12_jpeg80/`：12 张真实观鸟照片，从更大的 test31 测试集中人工挑选，覆盖典型、困难、多鸟种及已知失败案例；保留原始像素尺寸，仅以 JPEG quality 80 重新编码。
+- `examples/ground_truth_sample12.csv`：对应人工真值。
+
+该样本集用于快速体验和复现 BirdScan 的 primary / additional 输出，不是统计意义上的正式 benchmark，不应据此估计整体准确率。详见 [examples/README.md](examples/README.md)。
 
 ## 候选鸟种表
 

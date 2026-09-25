@@ -27,6 +27,14 @@ Crop is enabled by default. MegaDetector detection threshold=0.15 is an internal
 
 See the [selection pipeline](docs/selection_pipeline.md) for the complete result selection rules, parameter roles, and report field meanings.
 
+## Example
+
+The screenshots below show a real BirdScan run and its identification results. BirdScan is intended for first-pass screening; review the results alongside the original photos and human judgment.
+
+![BirdScan in a real run](docs/images/run.png)
+
+![BirdScan identification results](docs/images/result-prediction.png)
+
 ## Recommended hardware
 
 The default workflow uses BioCLIP 2.5 with MegaDetector crop, so a GPU-accelerated device is recommended. These are recommended configurations, not strict minimum requirements:
@@ -117,6 +125,15 @@ See all options with:
 ~~~bash
 python scan_birds.py --help
 ~~~
+
+## Example dataset
+
+The repository includes a small reproducible field-test sample:
+
+- `examples/sample12_jpeg80/`: 12 real bird photographs manually selected from the larger test31 field-test set. They include typical, difficult, multi-species, and known failure cases. Original pixel dimensions are preserved; the images were only re-encoded at JPEG quality 80.
+- `examples/ground_truth_sample12.csv`: corresponding manual ground truth.
+
+This sample set is intended for quickly trying BirdScan and reproducing its primary / additional output. It is not a statistically representative benchmark and should not be used to estimate overall accuracy. See [examples/README.md](examples/README.md).
 
 ## Candidate species table
 
