@@ -12,11 +12,13 @@ from scan_birds import (
     ADDITIONAL_SCORE_THRESHOLD,
     DEFAULT_CROP_MARGIN,
     DEFAULT_DETECTION_THRESHOLD,
+    DEFAULT_MIN_BBOX_AREA_RATIO,
     DEFAULT_SIZE_GATE,
     CROP_TOP_K,
     load_species,
     main,
     parse_args,
+    detection_meets_min_bbox_area_ratio,
     relative_file_key,
     species_display_name,
     select_crop_result,
@@ -92,6 +94,11 @@ class CropSelectionTests(unittest.TestCase):
         self.assertTrue(use_crop)
         self.assertEqual(primary["record"]["crop_file"], "det01")
 
+    def test_later_detection_cannot_replace_missing_det01(self) -> None:
+        primary, use_crop = select_crop_result([self.candidate(.99, .02, "det02")])
+        self.assertIsNone(primary)
+        self.assertFalse(use_crop)
+
     def test_additional_species_require_threshold_and_are_deduplicated(self) -> None:
         candidates = [
             self.candidate(.75, .02, "primary-det1"),
@@ -146,6 +153,12 @@ class CropSelectionTests(unittest.TestCase):
         self.assertEqual(DEFAULT_SIZE_GATE, .08)
         self.assertEqual(DEFAULT_DETECTION_THRESHOLD, .15)
         self.assertEqual(CROP_TOP_K, 1)
+
+    def test_min_bbox_area_ratio_skips_only_values_below_threshold(self) -> None:
+        threshold = DEFAULT_MIN_BBOX_AREA_RATIO
+        self.assertFalse(detection_meets_min_bbox_area_ratio(threshold - .0000001, threshold))
+        self.assertTrue(detection_meets_min_bbox_area_ratio(threshold, threshold))
+        self.assertTrue(detection_meets_min_bbox_area_ratio(threshold + .0000001, threshold))
 
     def test_species_display_name_uses_chinese_then_english_then_latin(self) -> None:
         species = {
@@ -332,12 +345,21 @@ class CropSelectionTests(unittest.TestCase):
         self.assertTrue(args.crop)
         self.assertEqual(args.model, "bioclip25")
         self.assertEqual(args.top_k, 1)
+        self.assertEqual(args.min_bbox_area_ratio, DEFAULT_MIN_BBOX_AREA_RATIO)
+
+    def test_min_bbox_area_ratio_can_be_overridden(self) -> None:
+        self.assertEqual(self.parse(["--min-bbox-area-ratio", "0.001"]).min_bbox_area_ratio, .001)
 
     def test_top_k_can_be_overridden(self) -> None:
         self.assertEqual(self.parse(["--top-k", "7"]).top_k, 7)
 
     def test_no_crop_flag(self) -> None:
         self.assertFalse(self.parse(["--no-crop"]).crop)
+
+    def test_min_bbox_area_ratio_does_not_enable_crop_in_no_crop_mode(self) -> None:
+        args = self.parse(["--no-crop", "--min-bbox-area-ratio", "0.01"])
+        self.assertFalse(args.crop)
+        self.assertEqual(args.min_bbox_area_ratio, .01)
 
     def test_both_models_accept_crop_and_no_crop_modes(self) -> None:
         for model in ("bioclip2", "bioclip25"):
@@ -346,6 +368,298 @@ class CropSelectionTests(unittest.TestCase):
 
 
 class MainRecoveryTests(unittest.TestCase):
+    def run_primary_case(
+        self, detections: list[tuple[float, tuple[int, int, int, int]]],
+        crop_results: dict[int, tuple[str, float]], baseline_score: float = .8,
+    ) -> tuple[list[dict[str, str]], list[str], list[list[str]]]:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo_dir = root / "photos"
+            photo_dir.mkdir()
+            source = photo_dir / "bird.png"
+            output_dir = root / "report"
+            args = SimpleNamespace(
+                species_file=root / "species.csv", photo_dir=photo_dir, output_dir=output_dir,
+                model="bioclip25", device="cpu", prompt_count=80, top_k=1,
+                batch_size=4, threshold=.5, crop=True,
+                min_bbox_area_ratio=DEFAULT_MIN_BBOX_AREA_RATIO,
+            )
+            species = {
+                name: {"鸟种编号": str(index), "中文名": name, "拉丁学名": name, "英文名称": name}
+                for index, name in enumerate(("baseline", "crop1", "crop2"), start=1)
+            }
+
+            class FakeImage:
+                size = (100, 100)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def convert(self, _mode):
+                    return self
+
+                def crop(self, _bounds):
+                    return self
+
+                def save(self, path):
+                    Path(path).write_bytes(b"crop")
+
+            fake_pil = ModuleType("PIL")
+            fake_pil.Image = SimpleNamespace(open=lambda _path: FakeImage())
+            prediction_calls: list[list[str]] = []
+
+            def fake_predict(_classifier, paths, _top_k, _batch_size):
+                path_strings = [str(path) for path in paths]
+                prediction_calls.append(path_strings)
+                if len(prediction_calls) == 1:
+                    return [{"file_name": str(source), "classification": "baseline", "score": baseline_score}], []
+                return [
+                    {"file_name": path, "classification": crop_results[index][0], "score": crop_results[index][1]}
+                    for path in path_strings
+                    if (index := int(Path(path).stem.rsplit("__det", 1)[1])) in crop_results
+                ], []
+
+            with (
+                patch("scan_birds.parse_args", return_value=args),
+                patch("scan_birds.load_species", return_value=species),
+                patch("scan_birds.find_images", return_value=[source]),
+                patch("scan_birds.validate_images", return_value=([source], [])),
+                patch("scan_birds.build_bioclip25_classifier", return_value=(object(), 0.0, False, root / "cache.pt")),
+                patch("scan_birds.predict_resiliently", side_effect=fake_predict),
+                patch("megadetector_utils.load_detector", return_value=Mock()),
+                patch("megadetector_utils.extract_animals", return_value=detections),
+                patch.dict(sys.modules, {"PIL": fake_pil}),
+            ):
+                self.assertEqual(main(), 0)
+
+            with (output_dir / "predictions.csv").open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            crop_files = sorted(p.name for p in (output_dir / "diagnostics" / "crop_runtime").glob("*"))
+            return rows, crop_files, prediction_calls
+
+    def test_det01_crop_replaces_higher_scoring_baseline(self) -> None:
+        rows, crop_files, calls = self.run_primary_case(
+            [(.9, (0, 0, 10, 10))], {1: ("crop1", .2)}, baseline_score=.99,
+        )
+        self.assertEqual(len(crop_files), 1)
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(rows[0]["拉丁学名"], "crop1")
+        self.assertEqual(rows[0]["final_source"], "crop")
+        self.assertEqual(rows[0]["primary_score"], "0.200000")
+        self.assertTrue(rows[0]["selected_crop_file"].endswith("det01.png"))
+
+    def test_det01_above_size_gate_keeps_baseline_and_is_not_additional(self) -> None:
+        rows, crop_files, calls = self.run_primary_case(
+            [(.9, (0, 0, 40, 25))], {1: ("crop1", .99)},
+        )
+        self.assertEqual(len(crop_files), 1)
+        self.assertEqual(len(calls[1]), 1)
+        self.assertEqual(rows[0]["拉丁学名"], "baseline")
+        self.assertEqual(rows[0]["final_source"], "baseline")
+        self.assertEqual(rows[0]["crop_top1_species"], "crop1")
+        self.assertEqual(rows[0]["additional_species"], "")
+
+    def test_det01_without_classification_keeps_baseline_and_det02_additional(self) -> None:
+        rows, crop_files, calls = self.run_primary_case(
+            [(.9, (0, 0, 10, 10)), (.9, (10, 10, 20, 20))],
+            {2: ("crop2", .95)},
+        )
+        self.assertEqual(len(crop_files), 2)
+        self.assertEqual(len(calls[1]), 2)
+        self.assertEqual(rows[0]["拉丁学名"], "baseline")
+        self.assertEqual(rows[0]["final_source"], "baseline")
+        self.assertEqual(rows[0]["crop_top1_species"], "")
+        self.assertEqual(rows[0]["additional_species"], "crop2")
+        self.assertEqual(rows[0]["additional_scores"], "0.950000")
+
+    def test_det02_above_size_gate_can_still_be_additional(self) -> None:
+        rows, crop_files, calls = self.run_primary_case(
+            [(.9, (0, 0, 10, 10)), (.9, (10, 10, 50, 35))],
+            {1: ("crop1", .2), 2: ("crop2", .95)},
+        )
+        self.assertEqual(len(crop_files), 2)
+        self.assertEqual(len(calls[1]), 2)
+        self.assertEqual(rows[0]["拉丁学名"], "crop1")
+        self.assertEqual(rows[0]["additional_species"], "crop2")
+        self.assertEqual(rows[0]["additional_scores"], "0.950000")
+
+    def test_small_bbox_is_skipped_and_boundary_bbox_is_cropped(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo_dir = root / "photos"
+            photo_dir.mkdir()
+            source = photo_dir / "bird.png"
+            output_dir = root / "report"
+            args = SimpleNamespace(
+                species_file=root / "species.csv", photo_dir=photo_dir, output_dir=output_dir,
+                model="bioclip25", device="cpu", prompt_count=80, top_k=1,
+                batch_size=4, threshold=.5, crop=True,
+                min_bbox_area_ratio=DEFAULT_MIN_BBOX_AREA_RATIO,
+            )
+            species = {
+                name: {"鸟种编号": str(index), "中文名": name, "拉丁学名": name, "英文名称": name}
+                for index, name in enumerate(("baseline", "crop"), start=1)
+            }
+
+            class FakeImage:
+                size = (100, 100)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def convert(self, _mode):
+                    return self
+
+                def crop(self, _bounds):
+                    return self
+
+                def save(self, path):
+                    Path(path).write_bytes(b"crop")
+
+            fake_pil = ModuleType("PIL")
+            fake_pil.Image = SimpleNamespace(open=lambda _path: FakeImage())
+            detections = [
+                (.9, (0, 0, 2, 1)),   # 0.0002: skipped
+                (.9, (0, 0, 3, 1)),   # 0.0003: retained
+                (.9, (0, 0, 4, 1)),   # 0.0004: retained
+            ]
+            prediction_calls: list[list[str]] = []
+
+            def fake_predict(_classifier, paths, _top_k, _batch_size):
+                path_strings = [str(path) for path in paths]
+                prediction_calls.append(path_strings)
+                if len(prediction_calls) == 1:
+                    return [{"file_name": str(source), "classification": "baseline", "score": .8}], []
+                return [
+                    {"file_name": path, "classification": "crop", "score": .95}
+                    for path in path_strings
+                ], []
+
+            with (
+                patch("scan_birds.parse_args", return_value=args),
+                patch("scan_birds.load_species", return_value=species),
+                patch("scan_birds.find_images", return_value=[source]),
+                patch("scan_birds.validate_images", return_value=([source], [])),
+                patch("scan_birds.build_bioclip25_classifier", return_value=(object(), 0.0, False, root / "cache.pt")),
+                patch("scan_birds.predict_resiliently", side_effect=fake_predict),
+                patch("megadetector_utils.load_detector", return_value=Mock()),
+                patch("megadetector_utils.extract_animals", return_value=detections),
+                patch.dict(sys.modules, {"PIL": fake_pil}),
+            ):
+                self.assertEqual(main(), 0)
+
+            crop_files = list((output_dir / "diagnostics" / "crop_runtime").glob("*"))
+            self.assertEqual(len(crop_files), 2)
+            self.assertEqual(len(prediction_calls[1]), 2)
+            with (output_dir / "predictions.csv").open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(rows[0]["拉丁学名"], "baseline")
+            self.assertEqual(rows[0]["final_source"], "baseline")
+            self.assertEqual(rows[0]["additional_species"], "crop")
+            self.assertEqual(rows[0]["selected_crop_file"], "")
+            summary = (output_dir / "run_summary.txt").read_text(encoding="utf-8")
+            self.assertIn("Small bbox detections skipped: 1", summary)
+            self.assertIn("Min bbox area ratio: 0.0003", summary)
+
+    def test_no_crop_mode_ignores_min_bbox_area_ratio(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo_dir = root / "photos"
+            photo_dir.mkdir()
+            source = photo_dir / "bird.png"
+            output_dir = root / "report"
+            args = SimpleNamespace(
+                species_file=root / "species.csv", photo_dir=photo_dir, output_dir=output_dir,
+                model="bioclip25", device="cpu", prompt_count=80, top_k=1,
+                batch_size=1, threshold=.5, crop=False, min_bbox_area_ratio=.9,
+            )
+            species = {
+                "bird": {"鸟种编号": "1", "中文名": "鸟", "拉丁学名": "bird", "英文名称": "Bird"}
+            }
+            with (
+                patch("scan_birds.parse_args", return_value=args),
+                patch("scan_birds.load_species", return_value=species),
+                patch("scan_birds.find_images", return_value=[source]),
+                patch("scan_birds.validate_images", return_value=([source], [])),
+                patch("scan_birds.build_bioclip25_classifier", return_value=(object(), 0.0, False, root / "cache.pt")),
+                patch("scan_birds.predict_resiliently", return_value=([{"file_name": str(source), "classification": "bird", "score": .8}], [])),
+                patch("megadetector_utils.load_detector") as load_detector,
+            ):
+                self.assertEqual(main(), 0)
+            load_detector.assert_not_called()
+            self.assertFalse((output_dir / "diagnostics" / "crop_runtime").exists())
+            with (output_dir / "predictions.csv").open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["拉丁学名"], "bird")
+
+    def test_all_small_detections_fall_back_to_baseline_without_crop_inference(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            photo_dir = root / "photos"
+            photo_dir.mkdir()
+            source = photo_dir / "bird.png"
+            output_dir = root / "report"
+            args = SimpleNamespace(
+                species_file=root / "species.csv", photo_dir=photo_dir, output_dir=output_dir,
+                model="bioclip25", device="cpu", prompt_count=80, top_k=1,
+                batch_size=4, threshold=.5, crop=True,
+                min_bbox_area_ratio=DEFAULT_MIN_BBOX_AREA_RATIO,
+            )
+            species = {
+                "bird": {"鸟种编号": "1", "中文名": "鸟", "拉丁学名": "bird", "英文名称": "Bird"}
+            }
+
+            class FakeImage:
+                size = (100, 100)
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return None
+
+                def convert(self, _mode):
+                    return self
+
+                def crop(self, _bounds):
+                    raise AssertionError("filtered detections must not be cropped")
+
+            fake_pil = ModuleType("PIL")
+            fake_pil.Image = SimpleNamespace(open=lambda _path: FakeImage())
+            predict = Mock(return_value=([{"file_name": str(source), "classification": "bird", "score": .8}], []))
+            detections = [(.9, (0, 0, 2, 1)), (.9, (0, 0, 1, 2))]
+            with (
+                patch("scan_birds.parse_args", return_value=args),
+                patch("scan_birds.load_species", return_value=species),
+                patch("scan_birds.find_images", return_value=[source]),
+                patch("scan_birds.validate_images", return_value=([source], [])),
+                patch("scan_birds.build_bioclip25_classifier", return_value=(object(), 0.0, False, root / "cache.pt")),
+                patch("scan_birds.predict_resiliently", predict),
+                patch("megadetector_utils.load_detector", return_value=Mock()),
+                patch("megadetector_utils.extract_animals", return_value=detections),
+                patch.dict(sys.modules, {"PIL": fake_pil}),
+            ):
+                self.assertEqual(main(), 0)
+
+            predict.assert_called_once()
+            self.assertEqual(len(predict.call_args.args[1]), 1)
+            self.assertEqual(len(list((output_dir / "diagnostics" / "crop_runtime").glob("*"))), 0)
+            with (output_dir / "predictions.csv").open(encoding="utf-8-sig", newline="") as handle:
+                rows = list(csv.DictReader(handle))
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0]["拉丁学名"], "bird")
+            self.assertEqual(rows[0]["final_source"], "baseline")
+            self.assertEqual(rows[0]["crop_used"], "false")
+            summary = (output_dir / "run_summary.txt").read_text(encoding="utf-8")
+            self.assertIn("Small bbox detections skipped: 2", summary)
+
     def run_baseline_failure_case(self, crop_succeeds: bool) -> tuple[int, list[dict[str, str]], str]:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -357,6 +671,7 @@ class MainRecoveryTests(unittest.TestCase):
                 species_file=root / "species.csv", photo_dir=photo_dir, output_dir=output_dir,
                 model="bioclip25", device="cpu", prompt_count=80, top_k=1,
                 batch_size=1, threshold=.5, crop=True,
+                min_bbox_area_ratio=DEFAULT_MIN_BBOX_AREA_RATIO,
             )
             species = {
                 "bird": {"鸟种编号": "1", "中文名": "鸟", "拉丁学名": "bird", "英文名称": "Bird"}

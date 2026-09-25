@@ -17,13 +17,15 @@ Original image
 → BioCLIP baseline classification
 → MegaDetector V6 detects animals and generates crops
 → classify all crops with the same BioCLIP model and keep only each detection's Top-1
-→ use the first detection's Top-1 as primary when bbox area ratio <= 0.08; otherwise keep the baseline
-→ fall back to baseline when there is no usable first detection or crop classification fails
-→ list other detections' Top-1 as additional species only when score >= 0.90 and the species is distinct and not repeated
+→ only original det01 can determine primary: use its crop Top-1 directly when classification succeeds and bbox area ratio <= 0.08, without comparing scores with baseline
+→ keep the original-image baseline when det01 has area ratio > 0.08, is filtered, or has no crop classification result; det02+ never replace primary
+→ list det02+ Top-1 as additional species only when score >= 0.90 and the species is distinct and not repeated
 → additional species never replace the primary
 ~~~
 
-Crop is enabled by default. MegaDetector detection threshold=0.15 is an internal setting; crop margin defaults to 0.30 and the size gate to 0.08. Use --no-crop to classify original images only; --crop explicitly enables the default crop workflow. The MegaDetector detection threshold and crop margin are not regular CLI options.
+Crop is enabled by default. MegaDetector detection threshold=0.15 is an internal setting; crop margin defaults to 0.30 and the size gate to 0.08. Detections whose original bbox area is below 0.0003 of the source image are skipped by default. This check uses the detector bbox before margin expansion. Use --no-crop to classify original images only; --crop explicitly enables the default crop workflow. The MegaDetector detection threshold and crop margin are not regular CLI options.
+
+See the [selection pipeline](docs/selection_pipeline.md) for the complete result selection rules, parameter roles, and report field meanings.
 
 ## Recommended hardware
 
@@ -107,6 +109,7 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 - --batch-size N: images per classification batch, default 16; reduce it on lower-resource systems.
 - --top-k N: candidates requested from original-image BioCLIP, default 1 for the formal workflow; explicit values above 1 affect internal inference only, while the user report still has one primary row per photo. Experiment and diagnostic scripts may use Top-K independently.
 - --threshold N: used only to decide uncertain.csv membership; a final primary Top-1 score below this value is listed there. Default 0.5. It does not change the MegaDetector detection threshold.
+- --min-bbox-area-ratio N: skip detections whose original bbox area divided by original image area is below N; default 0.0003. This applies only when crop is enabled, and detections exactly at the threshold are retained.
 - --output-dir DIR: report directory. By default BioCLIP 2.5 writes to reports/bird_report_bioclip25/ and BioCLIP 2.0 writes to reports/bird_report/.
 
 See all options with:
@@ -144,9 +147,9 @@ For your first run, start with predictions.csv, then check run_summary.txt for t
     - crop_top1_species, crop_top1_score
 - **species_summary.csv:** summarizes only successfully classified photos present in predictions.csv, with per-species primary_count, additional_count, max_score, and best_image. max_score is the highest score for that species across primary and additional appearances; best_image is the photo where that score occurred. It no longer uses the legacy Top-K count field.
 - **uncertain.csv:** photos whose Top-1 score is below threshold.
-- **run_summary.txt:** scan and failure counts, stage timings, and overall speed.
+- **run_summary.txt:** scan and failure counts, the minimum bbox area ratio and number of skipped detections, stage timings, and overall speed.
 
-The file_name in predictions.csv always points to the original photo. With crop enabled, final_source says whether the baseline or first-detection crop was selected for primary; crop_used indicates whether crop was used. selected_crop_file, detection_confidence, and bbox_area_ratio describe the primary detection. With --no-crop, final_source is baseline and crop-specific fields are blank.
+The file_name in predictions.csv always points to the original photo. With crop enabled, final_source says whether the baseline or original det01 crop was selected for primary; crop_used indicates whether crop was used. When crop is selected, selected_crop_file, detection_confidence, and bbox_area_ratio describe det01. With --no-crop, final_source is baseline and crop-specific fields are blank.
 
 ## Project files
 

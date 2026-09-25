@@ -17,13 +17,15 @@ BirdScan 想解决的是整批照片的筛查和整理：先让 AI 把照片跑�
 → BioCLIP baseline 分类
 → MegaDetector V6 检测动物并生成多个 crop
 → 使用同一个 BioCLIP 模型对所有 crop 分类，每个 detection 只取 Top-1
-→ first detection 的 Top-1 作为 primary；bbox area ratio <= 0.08 时采用，否则保留原图 baseline
-→ 无有效 detection 或 crop 分类失败时回退 baseline
-→ 其余 detections 的 Top-1 仅在 score >= 0.90 且物种不同/未重复时列为 additional species
+→ 只有原始 det01 可决定 primary：分类成功且 bbox area ratio <= 0.08 时，直接采用其 crop Top-1，不与 baseline 比分
+→ det01 面积占比 > 0.08、被过滤或没有 crop 分类结果时，保留原图 baseline；det02+ 不接替 primary
+→ det02+ 的 Top-1 仅在 score >= 0.90 且物种不同/未重复时列为 additional species
 → additional species 不覆盖 primary
 ~~~
 
-Crop 默认开启。MegaDetector detection threshold=0.15 是内部设置，crop margin 默认是 0.30，size gate 默认是 0.08。使用 --no-crop 可只对原图运行 BioCLIP；--crop 可显式启用默认 crop 流程。MegaDetector detection threshold 和 margin 不是普通 CLI 参数。
+Crop 默认开启。MegaDetector detection threshold=0.15 是内部设置，crop margin 默认是 0.30，size gate 默认是 0.08。默认跳过原图面积占比小于 0.0003 的 detection bbox；该门槛只按扩 margin 前的原始 bbox 计算。使用 --no-crop 可只对原图运行 BioCLIP；--crop 可显式启用默认 crop 流程。MegaDetector detection threshold 和 margin 不是普通 CLI 参数。
+
+完整的结果选择规则、参数作用层级与报告字段含义见 [识别决策链](docs/selection_pipeline.md)。
 
 ## 推荐硬件
 
@@ -107,6 +109,7 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 - --batch-size N：每批分类的图片数，默认 16；资源较少时可调低。
 - --top-k N：原图 BioCLIP 请求的候选数，正式默认值为 1；显式指定大于 1 仅影响内部推理，正式报告仍每张图只输出一行 primary。实验和诊断脚本可独立使用 Top-K。
 - --threshold N：仅用于 uncertain.csv 判定；最终 primary Top-1 score 低于该值时列入该文件，默认 0.5。它不改变 MegaDetector detection threshold。
+- --min-bbox-area-ratio N：跳过原始 detection bbox 面积占原图面积比例小于 N 的检测；默认 0.0003。仅 crop 模式生效，等于门槛的检测会保留。
 - --output-dir DIR：报告目录。默认 BioCLIP 2.5 写入 reports/bird_report_bioclip25/；BioCLIP 2.0 写入 reports/bird_report/。
 
 参数名和其他选项可通过以下命令查看：
@@ -144,9 +147,9 @@ python scan_birds.py --help
     - crop_top1_species、crop_top1_score
 - **species_summary.csv：** 仅统计进入 predictions.csv 的成功图片，按物种汇总 primary_count、additional_count、max_score 和 best_image。max_score 是该物种在 primary 与 additional 中出现过的最高分，best_image 是该最高分所在图片；不再使用旧 Top-K 计数字段。
 - **uncertain.csv：** Top-1 score 低于 threshold 的照片。
-- **run_summary.txt：** 扫描与失败数量、各阶段耗时和整体速度。
+- **run_summary.txt：** 扫描与失败数量、最小 bbox 面积门槛及跳过的 detection 数、各阶段耗时和整体速度。
 
-predictions.csv 的 file_name 始终指向原始照片。启用 crop 时，final_source 表示 primary 采用 baseline 还是 first detection crop；crop_used 表示是否采用 crop。selected_crop_file、detection_confidence 和 bbox_area_ratio 记录 primary detection 的信息。使用 --no-crop 时，final_source 为 baseline，crop 专属字段留空。
+predictions.csv 的 file_name 始终指向原始照片。启用 crop 时，final_source 表示 primary 采用 baseline 还是原始 det01 的 crop；crop_used 表示是否采用 crop。selected_crop_file、detection_confidence 和 bbox_area_ratio 记录采用 crop 时 det01 的信息。使用 --no-crop 时，final_source 为 baseline，crop 专属字段留空。
 
 ## 项目文件
 

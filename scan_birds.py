@@ -32,19 +32,21 @@ BIOCLIP25_MODEL_STR = "hf-hub:imageomics/bioclip-2.5-vith14"
 DEFAULT_SIZE_GATE = 0.08
 DEFAULT_DETECTION_THRESHOLD = 0.15
 DEFAULT_CROP_MARGIN = 0.30
+DEFAULT_MIN_BBOX_AREA_RATIO = 0.0003
 ADDITIONAL_SCORE_THRESHOLD = 0.90
 CROP_TOP_K = 1
 
 
+def detection_meets_min_bbox_area_ratio(area_ratio: float, minimum: float) -> bool:
+    return area_ratio >= minimum
+
+
 def select_crop_result(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any] | None, bool]:
-    """Select detection 1 as primary, then apply the existing bbox area gate."""
-    if not candidates:
-        return None, False
-    has_detection_indices = any("detection_index" in item["record"] for item in candidates)
+    """Only original detection 1 can replace the baseline, subject to the bbox area gate."""
     primary = next(
         (item for item in candidates if int(item["record"].get("detection_index", 0)) == 1),
         None,
-    ) if has_detection_indices else candidates[0]
+    )
     if primary is None:
         return None, False
     return primary, float(primary["record"]["area"]) <= DEFAULT_SIZE_GATE
@@ -53,18 +55,14 @@ def select_crop_result(candidates: list[dict[str, Any]]) -> tuple[dict[str, Any]
 def select_primary_and_additional(
     candidates: list[dict[str, Any]], baseline_top: dict[str, Any] | None,
 ) -> tuple[dict[str, Any] | None, bool, dict[str, Any] | None, list[dict[str, Any]]]:
-    """Keep first detection (or baseline fallback) primary and deduplicate later Top-1 species."""
-    first_detection = [
-        item for item in candidates
-        if int(item["record"].get("detection_index", 1)) == 1
-    ]
-    primary_crop, use_crop = select_crop_result(first_detection)
+    """Keep original detection 1 (or baseline fallback) primary and deduplicate later Top-1 species."""
+    primary_crop, use_crop = select_crop_result(candidates)
     primary = primary_crop["prediction"] if use_crop and primary_crop else baseline_top
     primary_species = str((primary or {}).get("classification", "") or "")
 
     additional_by_species: dict[str, dict[str, Any]] = {}
     for item in sorted(candidates, key=lambda candidate: int(candidate["record"].get("detection_index", 0))):
-        if int(item["record"].get("detection_index", 0)) == 1:
+        if int(item["record"].get("detection_index", 0)) <= 1:
             continue
         prediction = item["prediction"]
         species_name = str(prediction.get("classification", "") or "")
@@ -96,6 +94,8 @@ def parse_args() -> argparse.Namespace:
                         help="Internal original-image inference candidates (default: 1); reports show primary Top-1")
     parser.add_argument("--batch-size", type=int, default=16, help="Images per BioCLIP inference batch (default: 16)")
     parser.add_argument("--threshold", type=float, default=0.5, help="Top-1 uncertainty threshold (default: 0.5)")
+    parser.add_argument("--min-bbox-area-ratio", type=float, default=DEFAULT_MIN_BBOX_AREA_RATIO,
+                        help="Skip MegaDetector boxes below this fraction of the original image area (default: 0.0003)")
     parser.add_argument("--device", default="mps", help="BioCLIP device, e.g. mps or cpu (default: mps)")
     parser.add_argument("--model", choices=("bioclip2", "bioclip25"), default="bioclip25", help="Model to use (default: bioclip25)")
     crop_group = parser.add_mutually_exclusive_group()
@@ -120,6 +120,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--batch-size must be at least 1")
     if not 0 <= args.threshold <= 1:
         parser.error("--threshold must be between 0 and 1")
+    if not 0 <= args.min_bbox_area_ratio <= 1:
+        parser.error("--min-bbox-area-ratio must be between 0 and 1")
     return args
 
 
@@ -480,6 +482,8 @@ def write_reports(
     elapsed_seconds: float,
     stage_timings: dict[str, float],
     diagnostics: dict[str, dict[str, Any]] | None = None,
+    min_bbox_area_ratio: float = DEFAULT_MIN_BBOX_AREA_RATIO,
+    small_bbox_detections_skipped: int = 0,
 ) -> float:
     report_started = time.perf_counter()
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -562,6 +566,8 @@ def write_reports(
         f"Scanned photos: {scanned_count}",
         f"Successful: {success_count}",
         f"Failed: {len(failures)}",
+        f"Small bbox detections skipped: {small_bbox_detections_skipped}",
+        f"Min bbox area ratio: {min_bbox_area_ratio:g}",
         f"Distinct primary species: {len(primary_counts)}",
         "",
         "Stage timings (seconds):",
@@ -596,7 +602,7 @@ def main() -> int:
         valid_paths, failures = validate_images(image_paths)
         if not valid_paths:
             print("Writing reports...")
-            write_reports(args.output_dir, args.photo_dir, [], species, failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings)
+            write_reports(args.output_dir, args.photo_dir, [], species, failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings, min_bbox_area_ratio=args.min_bbox_area_ratio)
             print("No readable images found; empty reports and run_summary.txt were written.", file=sys.stderr)
             return 2
 
@@ -624,6 +630,7 @@ def main() -> int:
         failures.extend(prediction_failures)
 
         diagnostics: dict[str, dict[str, Any]] = {}
+        small_bbox_detections_skipped = 0
         if args.crop:
             from PIL import Image
             import megadetector_utils as md
@@ -637,14 +644,21 @@ def main() -> int:
                 detector = md.load_detector(args.device)
             except Exception as exc:
                 raise RuntimeError(f"MegaDetector V6 初始化失败（crop 默认开启）：{exc}") from exc
+            # PyTorch-Wildlife calls predictor.stream_inference directly;
+            # Ultralytics reads this flag for per-image and speed logs.
+            detector.predictor.args.verbose = False
 
             crops: list[dict[str, Any]] = []
             per_source: dict[str, list[dict[str, Any]]] = {}
-            for source in valid_paths:
+            total_sources = len(valid_paths)
+            total_detections = 0
+            progress_width = 0
+            for source_index, source in enumerate(valid_paths, start=1):
                 key = source.resolve().as_posix()
                 per_source[key] = []
                 try:
                     found = [d for d in md.extract_animals(detector.single_image_detection(str(source), det_conf_thres=DEFAULT_DETECTION_THRESHOLD)) if d[0] >= DEFAULT_DETECTION_THRESHOLD]
+                    total_detections += len(found)
                     with Image.open(source) as opened:
                         image = opened.convert("RGB")
                     width, height = image.size
@@ -653,6 +667,9 @@ def main() -> int:
                         x1, y1 = max(0.0, min(width, x1)), max(0.0, min(height, y1))
                         x2, y2 = max(x1, min(width, x2)), max(y1, min(height, y2))
                         area_ratio = (x2 - x1) * (y2 - y1) / (width * height)
+                        if not detection_meets_min_bbox_area_ratio(area_ratio, args.min_bbox_area_ratio):
+                            small_bbox_detections_skipped += 1
+                            continue
                         bounds = md.padded_box((x1, y1, x2, y2), DEFAULT_CROP_MARGIN, width, height)
                         if bounds[2] <= bounds[0] or bounds[3] <= bounds[1]:
                             continue
@@ -665,6 +682,15 @@ def main() -> int:
                         crops.append(record)
                 except Exception as exc:
                     print(f"Crop detection failed; using baseline: {source}: {exc}", file=sys.stderr)
+                try:
+                    progress = f"[MegaDetector] {source_index} / {total_sources} | total detections: {total_detections}"
+                    sys.stdout.write("\r" + progress.ljust(progress_width))
+                    sys.stdout.flush()
+                    progress_width = max(progress_width, len(progress))
+                except (OSError, UnicodeError):
+                    pass
+            if total_sources:
+                print()
 
             crop_predictions: list[dict[str, Any]] = []
             crop_failures: list[tuple[Path, str]] = []
@@ -738,7 +764,7 @@ def main() -> int:
             if relative_file_key(source, args.photo_dir) not in successful_keys
         ]
         print("Writing reports...")
-        write_reports(args.output_dir, args.photo_dir, predictions, species, final_failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings, diagnostics)
+        write_reports(args.output_dir, args.photo_dir, predictions, species, final_failures, len(image_paths), args.threshold, time.perf_counter() - started, stage_timings, diagnostics, args.min_bbox_area_ratio, small_bbox_detections_skipped)
         total_seconds = time.perf_counter() - started
         print(f"Reports written to: {args.output_dir.resolve()}")
         print(f"Timings — model load: {stage_timings['model_load']:.3f}s; candidate text: {stage_timings['candidate_text']:.3f}s; image inference: {stage_timings['image_inference']:.3f}s; report writing: {stage_timings['report_writing']:.3f}s; total: {total_seconds:.3f}s.")
