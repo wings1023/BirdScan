@@ -2,7 +2,9 @@
 
 **Language: English | [中文](README.md)**
 
-BirdScan is a **batch species-screening tool for birders**. Its default workflow uses BioCLIP 2.5 with MegaDetector V6 crops to identify and organize candidate species across a full batch of bird photos. You can tailor the candidate list to the location, season, and habitat to systematically surface birds, photos, and unusual results worth reviewing among hundreds or even thousands of images. BirdScan reads original photos without modifying them. It supports batch screening, batch summaries, and manual review; it does not replace human identification.
+BirdScan is a batch bird-species identification tool designed for birders. By default, it uses BioCLIP 2.5 together with a MegaDetector V6 crop pipeline to identify and organize candidate species across an entire batch of bird photos. The candidate species list can be narrowed according to location, season, and habitat, helping users systematically surface species, photos, and unusual results worth further manual review from hundreds or even thousands of images.
+
+BirdScan only reads the original photos and never modifies them. It is designed as an auxiliary workflow for “batch identification + batch-level summary + manual review,” rather than a replacement for manual identification.
 
 ## Why BirdScan exists
 
