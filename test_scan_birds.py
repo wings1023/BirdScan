@@ -16,6 +16,7 @@ from scan_birds import (
     DEFAULT_SIZE_GATE,
     CROP_TOP_K,
     load_species,
+    load_candidate_embedding_cache,
     main,
     parse_args,
     detection_meets_min_bbox_area_ratio,
@@ -24,7 +25,84 @@ from scan_birds import (
     select_crop_result,
     select_primary_and_additional,
     write_reports,
+    validate_output_directory,
 )
+
+
+class CandidateCacheTests(unittest.TestCase):
+    class FakeTensor:
+        ndim = 2
+        shape = (4, 2)
+
+        def __init__(self, finite: bool = True) -> None:
+            self.finite = finite
+
+    class FakeTorch:
+        def __init__(self, result=None, error: Exception | None = None) -> None:
+            self.Tensor = CandidateCacheTests.FakeTensor
+            self.result = result
+            self.error = error
+
+        def load(self, *_args, **_kwargs):
+            if self.error:
+                raise self.error
+            return self.result
+
+        @staticmethod
+        def isfinite(tensor):
+            return SimpleNamespace(all=lambda: SimpleNamespace(item=lambda: tensor.finite))
+
+    def test_valid_cache_is_returned(self) -> None:
+        embeddings = self.FakeTensor()
+        torch = self.FakeTorch({"metadata": {"key": "value"}, "embeddings": embeddings})
+        loaded, reason = load_candidate_embedding_cache(torch, Path("cache.pt"), {"key": "value"}, 2)
+        self.assertIs(loaded, embeddings)
+        self.assertIsNone(reason)
+
+    def test_corrupt_or_invalid_cache_is_a_miss(self) -> None:
+        for torch in (
+            self.FakeTorch(error=RuntimeError("invalid pickle data")),
+            self.FakeTorch({"metadata": {"key": "value"}, "embeddings": object()}),
+            self.FakeTorch({"metadata": {"key": "value"}, "embeddings": self.FakeTensor(False)}),
+        ):
+            with self.subTest(torch=torch):
+                loaded, reason = load_candidate_embedding_cache(
+                    torch, Path("cache.pt"), {"key": "value"}, 2
+                )
+                self.assertIsNone(loaded)
+                self.assertTrue(reason)
+
+    def test_oom_while_reading_cache_is_not_hidden(self) -> None:
+        for message in ("CUDA out of memory", "DefaultCPUAllocator: can't allocate memory"):
+            with self.subTest(message=message):
+                torch = self.FakeTorch(error=RuntimeError(message))
+                with self.assertRaisesRegex(RuntimeError, "memory"):
+                    load_candidate_embedding_cache(torch, Path("cache.pt"), {"key": "value"}, 2)
+
+
+class OutputDirectoryTests(unittest.TestCase):
+    def test_equal_nested_and_normalized_nested_paths_are_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "photos"
+            root.mkdir()
+            for output in (root, root / "reports", root / "subdir" / ".." / "reports"):
+                with self.subTest(output=output), self.assertRaisesRegex(ValueError, "outside the input"):
+                    validate_output_directory(root, output)
+
+    def test_output_outside_input_is_allowed(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / "photos"
+            root.mkdir()
+            validate_output_directory(root, Path(directory) / "reports")
+
+    def test_main_rejects_nested_output_before_reading_species_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            photo_dir = Path(directory) / "photos"
+            photo_dir.mkdir()
+            args = SimpleNamespace(photo_dir=photo_dir, output_dir=photo_dir / "reports")
+            with patch("scan_birds.parse_args", return_value=args), patch("scan_birds.load_species") as load:
+                self.assertEqual(main(), 2)
+            load.assert_not_called()
 
 
 class LoadSpeciesTests(unittest.TestCase):

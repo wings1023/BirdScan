@@ -266,6 +266,75 @@ def candidate_cache_path(
     return CACHE_DIR / f"candidate-embeddings-{key}.pt", metadata
 
 
+def load_candidate_embedding_cache(
+    torch: Any, path: Path, metadata: dict[str, Any], label_count: int,
+) -> tuple[Any | None, str | None]:
+    """Read and validate a CPU cache; return invalid-cache details without hiding OOM."""
+    try:
+        cached = torch.load(path, map_location="cpu", weights_only=True)
+        if not isinstance(cached, dict) or cached.get("metadata") != metadata:
+            raise ValueError("cache metadata does not match")
+        embeddings = cached.get("embeddings")
+        if (
+            not isinstance(embeddings, torch.Tensor)
+            or embeddings.ndim != 2
+            or embeddings.shape[0] < 1
+            or embeddings.shape[1] != label_count
+        ):
+            raise ValueError("cache embeddings have an invalid shape")
+        if not bool(torch.isfinite(embeddings).all().item()):
+            raise ValueError("cache embeddings contain non-finite values")
+        return embeddings, None
+    except FileNotFoundError:
+        return None, None
+    except Exception as exc:
+        # A runtime error raised by CPU deserialization can also be a memory OOM.
+        # Do not turn resource exhaustion into a misleading cache miss.
+        error_text = str(exc).lower()
+        error_type = type(exc).__name__.lower().replace("_", "")
+        if (
+            isinstance(exc, MemoryError)
+            or "outofmemory" in error_type
+            or any(
+                marker in error_text
+                for marker in ("out of memory", "can't allocate memory", "cannot allocate memory")
+            )
+        ):
+            raise
+        return None, str(exc)
+
+
+def validate_output_directory(photo_dir: Path, output_dir: Path) -> None:
+    """Reject reports inside the source tree, resolving dot segments and symlinks."""
+    source = photo_dir.resolve()
+    output = output_dir.resolve()
+    inside_source = False
+    try:
+        output.relative_to(source)
+        inside_source = True
+    except ValueError:
+        # On case-insensitive filesystems, a non-existent output suffix may keep
+        # different casing from the existing source path. Compare existing
+        # ancestors by filesystem identity to handle that native path behavior.
+        ancestor = output if output.exists() else output.parent
+        while True:
+            try:
+                if ancestor.samefile(source):
+                    inside_source = True
+                    break
+            except OSError:
+                pass
+            if ancestor.parent == ancestor:
+                break
+            ancestor = ancestor.parent
+    if not inside_source:
+        return
+    raise ValueError(
+        f"Output directory must be outside the input photo directory: "
+        f"output-dir {output} is inside input-dir {source}"
+    )
+
+
 def build_classifier(labels: list[str], device: str) -> tuple[Any, float, bool, Path]:
     """Load BioCLIP once and reuse a validated local candidate-text cache when possible."""
     import torch
@@ -286,17 +355,19 @@ def build_classifier(labels: list[str], device: str) -> tuple[Any, float, bool, 
             )
             self.cache_hit = False
             started = time.perf_counter()
-            try:
-                cached = torch.load(self.cache_path, map_location="cpu", weights_only=True)
-                if (
-                    cached.get("metadata") == metadata
-                    and tuple(cached["embeddings"].shape)[1] == len(self.classes)
-                ):
-                    self.txt_embeddings = cached["embeddings"].to(self.device)
-                    self.cache_hit = True
-                else:
-                    raise ValueError("cache metadata or embedding shape does not match")
-            except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
+            embeddings, invalid_reason = load_candidate_embedding_cache(
+                torch, self.cache_path, metadata, len(self.classes)
+            )
+            if embeddings is not None:
+                # Keep device transfer outside the cache-read recovery boundary.
+                self.txt_embeddings = embeddings.to(self.device)
+                self.cache_hit = True
+            else:
+                if invalid_reason:
+                    print(
+                        f"Candidate embedding cache is invalid ({self.cache_path}: "
+                        f"{invalid_reason}); treating it as a cache miss and rebuilding."
+                    )
                 self.txt_embeddings = self._get_txt_embeddings(self.classes)
                 self.cache_path.parent.mkdir(parents=True, exist_ok=True)
                 temporary_path = self.cache_path.with_suffix(".tmp")
@@ -375,17 +446,19 @@ def build_bioclip25_classifier(
             self.cache_hit = False
             started = time.perf_counter()
             txt_embeddings = None
-            try:
-                cached = torch.load(self.cache_path, map_location="cpu", weights_only=True)
-                if (
-                    cached.get("metadata") == metadata
-                    and tuple(cached["embeddings"].shape)[1] == len(self.classes)
-                ):
-                    self.txt_embeddings = cached["embeddings"].to(self.device)
-                    self.cache_hit = True
-                else:
-                    raise ValueError("cache metadata or embedding shape does not match")
-            except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
+            embeddings, invalid_reason = load_candidate_embedding_cache(
+                torch, self.cache_path, metadata, len(self.classes)
+            )
+            if embeddings is not None:
+                # Keep device transfer outside the cache-read recovery boundary.
+                self.txt_embeddings = embeddings.to(self.device)
+                self.cache_hit = True
+            else:
+                if invalid_reason:
+                    print(
+                        f"Candidate embedding cache is invalid ({self.cache_path}: "
+                        f"{invalid_reason}); treating it as a cache miss and rebuilding."
+                    )
                 # Reuse and migrate the pre-prompt-count full-template cache, if present.
                 # Older BioCLIP 2.5 caches were produced with all available templates.
                 from bioclip.predict import OPENA_AI_IMAGENET_TEMPLATE
@@ -394,16 +467,18 @@ def build_bioclip25_classifier(
                     legacy_path, legacy_metadata = candidate_cache_path(
                         self.model_str, self.pretrained_str, self.classes
                     )
-                    try:
-                        legacy = torch.load(legacy_path, map_location="cpu", weights_only=True)
-                        if (
-                            legacy.get("metadata") == legacy_metadata
-                            and tuple(legacy["embeddings"].shape)[1] == len(self.classes)
-                        ):
-                            txt_embeddings = legacy["embeddings"].to(self.device)
-                            self.cache_hit = True
-                    except (FileNotFoundError, KeyError, TypeError, ValueError, RuntimeError):
-                        pass
+                    legacy_embeddings, legacy_invalid_reason = load_candidate_embedding_cache(
+                        torch, legacy_path, legacy_metadata, len(self.classes)
+                    )
+                    if legacy_embeddings is not None:
+                        # Device transfer errors must not be mistaken for invalid cache data.
+                        txt_embeddings = legacy_embeddings.to(self.device)
+                        self.cache_hit = True
+                    elif legacy_invalid_reason:
+                        print(
+                            f"Legacy candidate embedding cache is invalid ({legacy_path}: "
+                            f"{legacy_invalid_reason}); rebuilding."
+                        )
                 if txt_embeddings is None:
                     txt_embeddings = encode_bioclip25_candidate_embeddings(
                         self, self.classes, prompt_count=prompt_count, batch_size=32
@@ -591,6 +666,7 @@ def main() -> int:
     started = time.perf_counter()
     stage_timings = {"species_file": 0.0, "model_load": 0.0, "candidate_text": 0.0, "image_inference": 0.0, "report_writing": 0.0}
     try:
+        validate_output_directory(args.photo_dir, args.output_dir)
         print("Loading species file...")
         stage_started = time.perf_counter()
         species = load_species(args.species_file)
