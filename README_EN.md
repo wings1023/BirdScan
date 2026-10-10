@@ -122,6 +122,8 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 - --min-bbox-area-ratio N: skip detections whose original bbox area divided by original image area is below N; default 0.0003. This applies only when crop is enabled, and detections exactly at the threshold are retained.
 - --output-dir DIR: report directory. By default BioCLIP 2.5 writes to reports/bird_report_bioclip25/ and BioCLIP 2.0 writes to reports/bird_report/.
 
+The report directory must be outside the input photo directory: it cannot be the same directory or a subdirectory, including paths reached through symbolic links.
+
 See all options with:
 
 ~~~bash

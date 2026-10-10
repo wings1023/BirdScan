@@ -122,6 +122,8 @@ python scan_birds.py "D:\Photos" --species-file species.xlsx --device cuda
 - --min-bbox-area-ratio N：跳过原始 detection bbox 面积占原图面积比例小于 N 的检测；默认 0.0003。仅 crop 模式生效，等于门槛的检测会保留。
 - --output-dir DIR：报告目录。默认 BioCLIP 2.5 写入 reports/bird_report_bioclip25/；BioCLIP 2.0 写入 reports/bird_report/。
 
+报告目录必须位于输入照片目录之外，不能与照片目录相同或位于其子目录中（包括符号链接指向的路径）。
+
 参数名和其他选项可通过以下命令查看：
 
 ~~~bash
