@@ -567,6 +567,7 @@ def write_reports(
         "selected_crop_file", "detection_confidence", "bbox_area_ratio",
         "baseline_top1_species", "baseline_top1_score", "crop_top1_species", "crop_top1_score",
         "primary_species", "primary_score", "additional_species", "additional_scores", "additional_count",
+        "additional_crop_files",
     ]
     rows: list[dict[str, Any]] = []
     by_file: dict[str, list[dict[str, Any]]] = {}
@@ -808,6 +809,7 @@ def main() -> int:
                     "additional_species": "|".join(item["prediction"]["classification"] for item in additional),
                     "additional_scores": "|".join(f"{float(item['prediction']['score']):.6f}" for item in additional),
                     "additional_count": len(additional),
+                    "additional_crop_files": "|".join(item["record"]["crop_file"] for item in additional),
                 }
             predictions = final_predictions
             if crop_failures:
@@ -830,6 +832,7 @@ def main() -> int:
                     "additional_species": "",
                     "additional_scores": "",
                     "additional_count": 0,
+                    "additional_crop_files": "",
                 }
             predictions = list(baseline_rows.values())
         successful_keys = {relative_file_key(item["file_name"], args.photo_dir) for item in predictions}

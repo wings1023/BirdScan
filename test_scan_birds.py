@@ -515,8 +515,35 @@ class MainRecoveryTests(unittest.TestCase):
 
             with (output_dir / "predictions.csv").open(encoding="utf-8-sig", newline="") as handle:
                 rows = list(csv.DictReader(handle))
+            self.assertEqual(list(rows[0])[-1], "additional_crop_files")
+            for row in rows:
+                names = row["additional_species"].split("|") if row["additional_species"] else []
+                scores = row["additional_scores"].split("|") if names else []
+                paths = row["additional_crop_files"].split("|") if names else []
+                self.assertEqual(len(names), len(scores))
+                self.assertEqual(len(names), len(paths))
+                if not names:
+                    self.assertEqual(row["additional_crop_files"], "")
+                for name, score, crop_file in zip(names, scores, paths):
+                    self.assertTrue((output_dir / crop_file).is_file())
+                    index = int(Path(crop_file).stem.rsplit("__det", 1)[1])
+                    self.assertEqual((name, score), (crop_results[index][0], f"{crop_results[index][1]:.6f}"))
             crop_files = sorted(p.name for p in (output_dir / "diagnostics" / "crop_runtime").glob("*"))
             return rows, crop_files, prediction_calls
+
+    def test_additional_crop_sources_survive_deduplication_and_filters(self) -> None:
+        rows, _, _ = self.run_primary_case(
+            [(.9, (0, 0, 10, 10))] * 8,
+            {1: ("crop1", .4), 2: ("crop2", .91), 3: ("baseline", .92),
+             4: ("crop2", .97), 5: ("crop1", .99), 6: ("baseline", .89),
+             7: ("crop2", .97)},
+        )
+        row = rows[0]
+        self.assertEqual(row["additional_species"], "crop2|baseline")
+        self.assertEqual(row["additional_scores"], "0.970000|0.920000")
+        paths = row["additional_crop_files"].split("|")
+        self.assertTrue(paths[0].endswith("__det04.png"))
+        self.assertTrue(paths[1].endswith("__det03.png"))
 
     def test_det01_crop_replaces_higher_scoring_baseline(self) -> None:
         rows, crop_files, calls = self.run_primary_case(

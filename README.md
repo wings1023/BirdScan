@@ -159,6 +159,7 @@ python scan_birds.py --help
 
 - **predictions.csv：** 每张成功照片一行 primary Top-1，不含 rank；保留 file_name、鸟种编号、中文名、拉丁学名、英文名称、score，并新增 primary_species、primary_score、additional_species、additional_scores、additional_count：
   - additional_species 与 additional_scores 按相同顺序以 `|` 分隔；它们只来自其他 detections 的 Top-1。
+  - CSV 末尾的 `additional_crop_files` 与上述物种、分数按 `|` 严格对应，记录产生最终分数的裁剪文件相对报告目录的路径；同种保留最高分来源，同分保留较早 detection，无 additional 时为空。以当前报告目录为起点打开该路径，即可查看对应裁剪图；详见[识别决策链](docs/selection_pipeline.md)。
   - additional species 需达到 score 0.90，物种间去重且不重复 primary，不会改变 primary。
   - baseline_top1_species、crop_top1_species、primary_species、additional_species 使用显示名：中文名优先，其次英文名称，最后回退拉丁名。
   - 另含以下 crop 诊断字段：

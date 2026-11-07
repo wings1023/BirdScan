@@ -159,6 +159,7 @@ For your first run, start with predictions.csv, then check run_summary.txt for t
 
 - **predictions.csv:** one primary Top-1 row per successfully classified photo, with no rank column. It retains file_name, Bird ID, Chinese name, Latin name, English name, and score, and adds primary_species, primary_score, additional_species, additional_scores, and additional_count:
   - additional_species and additional_scores are pipe-separated in matching order and come only from other detections' Top-1.
+  - The final CSV column `additional_crop_files` contains report-relative crop paths, pipe-separated in the same order as species and scores. Each path supplies the retained score; duplicates keep the highest score (earlier detection on ties). Empty when there are no additional species. Open each path relative to the current report directory to review the crop; see the [selection pipeline](docs/selection_pipeline.md) for details.
   - Additional species must score at least 0.90; duplicates and the primary species are excluded, and additional species never change the primary.
   - baseline_top1_species, crop_top1_species, primary_species, and additional_species use Chinese display names when available, then English names, then Latin names.
   - The file also includes these crop diagnostics:

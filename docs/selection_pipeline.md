@@ -100,3 +100,5 @@ detector 初始化失败会导致本次 crop 模式运行报错；逐图 detecti
 output-dir 必须位于输入照片目录之外，不能与输入目录相同或位于其子目录中；校验会解析相对路径和符号链接，并在读取候选表、扫描照片或创建输出之前拒绝此类路径。
 
 默认 output-dir 随模型选择：BioCLIP 2.5 为 `reports/bird_report_bioclip25/`，BioCLIP 2 为 `reports/bird_report/`。同一 output-dir 重跑时，三个 CSV 和 `run_summary.txt` 会重写覆盖；`diagnostics/crop_runtime/` 只创建目录，不自动清理。旧 crop 可能残留，因此正式 benchmark 或前后对比运行宜使用独立的 `--output-dir`。
+
+`predictions.csv` 末尾追加 `additional_crop_files`：与 `additional_species`、`additional_scores` 按 `|` 严格逐项对应，路径相对于当前报告目录。直接从去重后候选的 `record.crop_file` 导出，因此记录最终最高分来源；同分沿用原逻辑保留较早 detection。旧报告没有逐裁剪预测记录，不能仅凭图片文件可靠回填。
